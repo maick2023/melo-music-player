@@ -1,0 +1,46 @@
+name: melo_qq_music_player
+description: 仿QQ音乐高颜值跨平台全能音乐播放器 (支持全能大模型AI助手、双向语音交互点歌、启动免导入自动扫描、FFmpeg全格式无损解码、车载蓝牙/CarPlay点火自动续播、全网在线搜歌、三种播放样式切换、Wi-Fi传歌与均衡器)
+publish_to: 'none'
+version: 3.0.0+3
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  # 核心音频引擎 + FFmpeg 全格式解码引擎 (支持 MP3/FLAC/WAV/APE/DSD/ALAC/WMA/OGG/AAC/OPUS)
+  just_audio: ^0.9.40
+  media_kit: ^1.1.11
+  media_kit_libs_audio: ^1.0.5
+  audio_service: ^0.18.15
+  audio_session: ^0.1.21
+  # 本地音频文件免手动导入自动扫描与实时文件夹监听
+  on_audio_query: ^2.9.0
+  file_picker: ^8.1.2
+  permission_handler: ^11.3.1
+  path_provider: ^2.1.4
+  path: ^1.9.0
+  # 在线全网音乐搜索与全能大模型 API 网关请求
+  http: ^1.2.2
+  # 双向语音交互 (STT 实时语音识别 + TTS 智能语音播报)
+  speech_to_text: ^7.0.0
+  flutter_tts: ^4.0.2
+  # 状态管理与本地持久化
+  flutter_riverpod: ^2.5.1
+  shared_preferences: ^2.3.2
+  # 封面主色调提取与动效
+  palette_generator: ^0.3.3+4
+  # 局域网 Wi-Fi 传歌内置 HTTP 服务
+  shelf: ^1.4.2
+  shelf_router: ^1.1.4
+  network_info_plus: ^6.0.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
