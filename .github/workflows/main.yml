@@ -31,9 +31,9 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: 5. 自动生成 Android 原生工程并写入音乐/蓝牙/网络权限
+      - name: 5. 自动补全 Android 工程与权限
         run: |
-          flutter create --platforms=android --org com.melomusic.player .
+          flutter create --project-name melo_music_player --platforms=android --org com.melomusic.player .
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           if ! grep -q "READ_MEDIA_AUDIO" "$MANIFEST"; then
             sed -i 's/<manifest[^>]*>/&\n    <uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"\/>\n    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"\/>\n    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"\/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"\/>\n    <uses-permission android:name="android.permission.BLUETOOTH"\/>\n    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"\/>\n    <uses-permission android:name="android.permission.RECORD_AUDIO"\/>/' "$MANIFEST"
@@ -71,9 +71,9 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: 4. 自动生成 iOS 原生工程并写入后台播放与媒体权限
+      - name: 4. 自动补全 iOS 工程与权限
         run: |
-          flutter create --platforms=ios --org com.melomusic.player .
+          flutter create --project-name melo_music_player --platforms=ios --org com.melomusic.player .
           PLIST="ios/Runner/Info.plist"
           /usr/libexec/PlistBuddy -c "Add :NSAppleMusicUsageDescription string '需要访问您的媒体库以自动扫描并播放本地无损音乐'" "$PLIST" || true
           /usr/libexec/PlistBuddy -c "Add :NSLocalNetworkUsageDescription string '需要使用局域网开启 Wi-Fi 无线传歌服务'" "$PLIST" || true
