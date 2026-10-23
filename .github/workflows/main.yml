@@ -31,19 +31,26 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: 5. 自动补全 Android 工程与权限
+      - name: 5. 自动补全 Android 工程与权限配置
         run: |
           flutter create --project-name melo_music_player --platforms=android --org com.melomusic.player .
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           if ! grep -q "READ_MEDIA_AUDIO" "$MANIFEST"; then
             sed -i 's/<manifest[^>]*>/&\n    <uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"\/>\n    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"\/>\n    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"\/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"\/>\n    <uses-permission android:name="android.permission.BLUETOOTH"\/>\n    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"\/>\n    <uses-permission android:name="android.permission.RECORD_AUDIO"\/>/' "$MANIFEST"
           fi
+          # 将 Kotlin/Java 目标版本不一致强制拦截降级为警告（防止构建中断）
+          echo "kotlin.jvm.target.validation.mode=warning" >> android/gradle.properties
 
-      - name: 6. 获取依赖并自动修复第三方库命名空间 (兼容 AGP 8)
+      - name: 6. 获取依赖并修复第三方库兼容性
         run: |
           flutter pub get
-          # 自动为 on_audio_query 等旧三方插件补全缺失的 namespace
+          # 1. 补全 on_audio_query 缺失的 namespace (兼容 AGP 8)
           find /home/runner/.pub-cache/hosted/ -path "*/on_audio_query_android*/android/build.gradle" -exec sed -i '/android {/a \    namespace "com.lucasjosino.on_audio_query"' {} +
+          # 2. 将 on_audio_query 中的 Java 编译目标升级至 17
+          find /home/runner/.pub-cache/hosted/ -path "*/on_audio_query_android*/android/build.gradle" -exec sed -i 's/JavaVersion.VERSION_11/JavaVersion.VERSION_17/g' {} +
+          find /home/runner/.pub-cache/hosted/ -path "*/on_audio_query_android*/android/build.gradle" -exec sed -i 's/JavaVersion.VERSION_1_8/JavaVersion.VERSION_17/g' {} +
+          # 3. 将 on_audio_query 中的 Kotlin jvmTarget 对齐至 17
+          find /home/runner/.pub-cache/hosted/ -path "*/on_audio_query_android*/android/build.gradle" -exec sed -i 's/jvmTarget = .*/jvmTarget = "17"/g' {} +
 
       - name: 7. 编译正式版 Android APK
         run: |
