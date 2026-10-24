@@ -1,12 +1,18 @@
-class AiPlayerCommand {
-  final String action;
-  final String? targetQuery;
-  const AiPlayerCommand({required this.action, this.targetQuery});
-}
-
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+
+class AiPlayerCommand {
+  final String action;
+  final String? targetQuery;
+  final String replyText;
+
+  const AiPlayerCommand({
+    required this.action,
+    this.targetQuery,
+    this.replyText = '',
+  });
+}
 
 class QuickModelOption {
   final String label;
@@ -22,6 +28,9 @@ class LlmProviderPreset {
   final String hint;
   final List<QuickModelOption> quickModels;
 
+  String get baseUrl => defaultBaseUrl;
+  String get description => hint;
+
   const LlmProviderPreset({
     required this.id,
     required this.name,
@@ -30,6 +39,8 @@ class LlmProviderPreset {
     required this.hint,
     this.quickModels = const [],
   });
+
+  static List<LlmProviderPreset> get builtinProviders => UniversalLlmService.presets;
 }
 
 class UniversalLlmService {
@@ -169,7 +180,7 @@ class UniversalLlmService {
     required String baseUrl,
     required String apiKey,
     required String modelName,
-    required bool enableVoiceTts,
+    bool enableVoiceTts = true,
   }) async {
     this.providerId = providerId;
     this.baseUrl = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');

@@ -5,12 +5,11 @@ import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:flutter_tts/flutter_tts.dart';
 import '../services/audio_player_service.dart';
 import '../services/universal_llm_service.dart';
-import '../services/online_search_service.dart';
 import '../models/song_model.dart';
 
 class AiAssistantSheet extends ConsumerStatefulWidget {
   final String? currentSongSummary;
-  final Future<void> Function(AiPlayerCommand cmd)? onExecuteCommand;
+  final void Function(AiPlayerCommand cmd)? onExecuteCommand;
 
   const AiAssistantSheet({
     super.key,
