@@ -51,7 +51,7 @@ jobs:
         run: |
           flutter pub get
 
-      - name: 6. 统一修复主工程与所有第三方插件 (file_picker / on_audio_query 等) 的 compileSdk 36、namespace 与 Java 17 兼容性
+      - name: 6. 修复主工程与第三方插件的 compileSdk 36 与 namespace 兼容性
         run: |
           python3 - << 'EOF'
           import os, re
@@ -72,10 +72,22 @@ jobs:
                       orig = content
                       is_kts = fpath.endswith(".kts")
 
-                      # 1. 将主工程及所有插件 (如 :file_picker) 的 compileSdk 强制升至 36
+                      # 1. 仅将独立成行的 compileSdk / compileSdkVersion 升至 36（不改动其他编译选项）
                       content = re.sub(
-                          r"^(\s*)compileSdk(?:Version)?\b.*$",
-                          r"\1compileSdk = 36" if is_kts else r"\1compileSdkVersion 36",
+                          r"^(\s*)compileSdkVersion\s+(?:flutter\.compileSdkVersion|\d+)\s*$",
+                          r"\1compileSdkVersion 36",
+                          content,
+                          flags=re.MULTILINE,
+                      )
+                      content = re.sub(
+                          r"^(\s*)compileSdk\s*=\s*(?:flutter\.compileSdkVersion|\d+)\s*$",
+                          r"\1compileSdk = 36",
+                          content,
+                          flags=re.MULTILINE,
+                      )
+                      content = re.sub(
+                          r"^(\s*)compileSdk\s+(?:flutter\.compileSdkVersion|\d+)\s*$",
+                          r"\1compileSdk = 36" if is_kts else r"\1compileSdk 36",
                           content,
                           flags=re.MULTILINE,
                       )
@@ -83,24 +95,31 @@ jobs:
                       # 2. 将主工程 app 的 minSdk 设为 24，targetSdk 设为 35
                       if os.path.sep + "app" + os.path.sep in fpath:
                           content = re.sub(
-                              r"^(\s*)minSdk(?:Version)?\b.*$",
-                              r"\1minSdk = 24" if is_kts else r"\1minSdkVersion 24",
+                              r"^(\s*)minSdkVersion\s+(?:flutter\.minSdkVersion|\d+)\s*$",
+                              r"\1minSdkVersion 24",
                               content,
                               flags=re.MULTILINE,
                           )
                           content = re.sub(
-                              r"^(\s*)targetSdk(?:Version)?\b.*$",
-                              r"\1targetSdk = 35" if is_kts else r"\1targetSdkVersion 35",
+                              r"^(\s*)minSdk\s*=\s*(?:flutter\.minSdkVersion|\d+)\s*$",
+                              r"\1minSdk = 24",
+                              content,
+                              flags=re.MULTILINE,
+                          )
+                          content = re.sub(
+                              r"^(\s*)targetSdkVersion\s+(?:flutter\.targetSdkVersion|\d+)\s*$",
+                              r"\1targetSdkVersion 35",
+                              content,
+                              flags=re.MULTILINE,
+                          )
+                          content = re.sub(
+                              r"^(\s*)targetSdk\s*=\s*(?:flutter\.targetSdkVersion|\d+)\s*$",
+                              r"\1targetSdk = 35",
                               content,
                               flags=re.MULTILINE,
                           )
 
-                      # 3. 统一 Java / Kotlin 编译目标版本为 17，消除 jvmTarget 1.8 vs 17 冲突
-                      content = content.replace("JavaVersion.VERSION_1_8", "JavaVersion.VERSION_17")
-                      content = content.replace("JavaVersion.VERSION_11", "JavaVersion.VERSION_17")
-                      content = re.sub(r"jvmTarget\s*=\s*['\"](?:1\.8|11)['\"]", 'jvmTarget = "17"', content)
-
-                      # 4. 自动为旧插件 (如 on_audio_query_android) 补齐 AGP 8+ 必填的 namespace 并清理 Manifest 中的 package 属性
+                      # 3. 自动为缺少 namespace 的旧插件 (如 on_audio_query_android) 补齐 namespace 并移除 Manifest 中的 package 属性
                       manifest_path = os.path.join(dirpath, "src", "main", "AndroidManifest.xml")
                       if os.path.exists(manifest_path):
                           with open(manifest_path, "r", encoding="utf-8", errors="ignore") as mf:
@@ -122,49 +141,18 @@ jobs:
                               f.write(content)
                           print(f"[Patched] {fpath}")
 
-          # 5. 写入 Gradle 全局初始化脚本，确保所有子模块强制使用 compileSdk 36 且跳过 AAR 元数据版本拦截
+          # 4. 仅在 Gradle 中跳过 checkReleaseAarMetadata 元数据版本校验（不干预 JavaCompile 的 bootClasspath）
           init_dir = os.path.expanduser("~/.gradle/init.d")
           os.makedirs(init_dir, exist_ok=True)
           with open(os.path.join(init_dir, "fix_flutter_plugins.gradle"), "w", encoding="utf-8") as gf:
               gf.write('''
-          gradle.afterProject { proj ->
-              if (proj.hasProperty("android")) {
-                  try {
-                      proj.android.compileSdk = 36
-                  } catch (Throwable ignored) {
-                      try {
-                          proj.android.compileSdkVersion(36)
-                      } catch (Throwable ignored2) {}
-                  }
-              }
-          }
-          gradle.projectsEvaluated {
-              rootProject.allprojects { proj ->
-                  if (proj.hasProperty("android")) {
-                      try {
-                          proj.android.compileSdk = 36
-                      } catch (Throwable ignored) {
-                          try {
-                              proj.android.compileSdkVersion(36)
-                          } catch (Throwable ignored2) {}
-                      }
-                  }
-                  proj.tasks.withType(JavaCompile).configureEach {
-                      sourceCompatibility = JavaVersion.VERSION_17.toString()
-                      targetCompatibility = JavaVersion.VERSION_17.toString()
-                  }
-                  proj.tasks.matching { it.name.contains("Kotlin") }.configureEach { task ->
-                      try {
-                          task.kotlinOptions.jvmTarget = "17"
-                      } catch (Throwable ignored) {}
-                  }
-                  proj.tasks.matching { it.name.contains("AarMetadata") }.configureEach {
-                      enabled = false
-                  }
+          allprojects {
+              tasks.matching { it.name.contains("AarMetadata") }.configureEach {
+                  enabled = false
               }
           }
           ''')
-          print("[Success] Gradle global init script installed.")
+          print("[Success] AAR Metadata bypass installed.")
           EOF
 
       - name: 7. 编译正式版 Android APK
