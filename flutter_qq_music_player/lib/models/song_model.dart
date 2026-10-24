@@ -6,6 +6,10 @@ enum PlayerVisualStyle {
   fullscreen('沉浸大图', Icons.crop_portrait_rounded),
   glassCard('流光卡片', Icons.auto_awesome_mosaic_rounded);
 
+  static const PlayerVisualStyle classicVinyl = PlayerVisualStyle.vinyl;
+  static const PlayerVisualStyle immersiveCover = PlayerVisualStyle.fullscreen;
+  static const PlayerVisualStyle liquidGlassCard = PlayerVisualStyle.glassCard;
+
   final String label;
   final IconData icon;
   const PlayerVisualStyle(this.label, this.icon);

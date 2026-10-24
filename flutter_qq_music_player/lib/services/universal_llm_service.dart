@@ -1,3 +1,9 @@
+class AiPlayerCommand {
+  final String action;
+  final String? targetQuery;
+  const AiPlayerCommand({required this.action, this.targetQuery});
+}
+
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';

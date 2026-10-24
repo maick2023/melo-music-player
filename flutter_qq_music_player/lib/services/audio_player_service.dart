@@ -304,6 +304,8 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
   }
 
   /// 将联网搜索到的歌曲加入播放队列顶部并立即播放真人原唱
+  Future<void> addAndPlayOnlineSong(SongModel song) => addAndPlaySong(song);
+
   Future<void> addAndPlaySong(SongModel song) async {
     _deletedSongIds.remove(song.id);
     final existingIdx = state.allSongs.indexWhere((s) => s.id == song.id);
@@ -464,6 +466,8 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
             state.currentQueue.length;
     await playSongAt(prevIdx);
   }
+
+  void switchVisualStyle(PlayerVisualStyle style) => setVisualStyle(style);
 
   void setVisualStyle(PlayerVisualStyle style) {
     state = state.copyWith(visualStyle: style, showLyricsInline: false);

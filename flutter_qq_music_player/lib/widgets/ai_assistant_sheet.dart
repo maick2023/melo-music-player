@@ -9,7 +9,14 @@ import '../services/online_search_service.dart';
 import '../models/song_model.dart';
 
 class AiAssistantSheet extends ConsumerStatefulWidget {
-  const AiAssistantSheet({super.key});
+  final String? currentSongSummary;
+  final Future<void> Function(AiPlayerCommand cmd)? onExecuteCommand;
+
+  const AiAssistantSheet({
+    super.key,
+    this.currentSongSummary,
+    this.onExecuteCommand,
+  });
 
   @override
   ConsumerState<AiAssistantSheet> createState() => _AiAssistantSheetState();
@@ -176,22 +183,22 @@ class _AiAssistantSheetState extends ConsumerState<AiAssistantSheet> {
       if (playerState.isPlaying) notifier.togglePlayPause();
       cleanReply = reply.replaceFirst('[ACTION:PAUSE]', '').trim();
     } else if (reply.startsWith('[STYLE:VINYL]')) {
-      notifier.switchVisualStyle(PlayerVisualStyle.classicVinyl);
+      notifier.setVisualStyle(PlayerVisualStyle.vinyl);
       cleanReply = reply.replaceFirst('[STYLE:VINYL]', '').trim();
     } else if (reply.startsWith('[STYLE:FULLSCREEN]')) {
-      notifier.switchVisualStyle(PlayerVisualStyle.immersiveCover);
+      notifier.setVisualStyle(PlayerVisualStyle.fullscreen);
       cleanReply = reply.replaceFirst('[STYLE:FULLSCREEN]', '').trim();
     } else if (reply.startsWith('[STYLE:GLASS]')) {
-      notifier.switchVisualStyle(PlayerVisualStyle.liquidGlassCard);
+      notifier.setVisualStyle(PlayerVisualStyle.glassCard);
       cleanReply = reply.replaceFirst('[STYLE:GLASS]', '').trim();
     } else if (reply.startsWith('[PLAY_SONG:')) {
       final endIdx = reply.indexOf(']');
       if (endIdx != -1) {
         final keyword = reply.substring(11, endIdx).trim();
         cleanReply = reply.substring(endIdx + 1).trim();
-        final results = await OnlineSearchService.searchOnlineSongs(keyword);
+        final results = await notifier.searchOnlineSongs(keyword);
         if (results.isNotEmpty) {
-          await notifier.addAndPlayOnlineSong(results.first);
+          await notifier.addAndPlaySong(results.first);
         }
       }
     }
