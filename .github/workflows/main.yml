@@ -51,7 +51,7 @@ jobs:
         run: |
           flutter pub get
 
-      - name: 6. 修复主工程与第三方插件的 compileSdk 36、namespace 与 Kotlin JVM 目标校验
+      - name: 6. 修复主工程与第三方插件的 compileSdk 36、namespace、禁用 Lint 死锁与 Kotlin JVM 目标校验
         run: |
           python3 - << 'EOF'
           import os, re
@@ -136,12 +136,20 @@ jobs:
                                       with open(manifest_path, "w", encoding="utf-8") as mf:
                                           mf.write(new_mcontent)
 
+                      # 4. 在每个 android { ... } 块内注入 checkReleaseBuilds = false，从根源阻断 AGP 9.1 lintVitalAnalyzeRelease 提取 out.aar 报错
+                      if "checkReleaseBuilds" not in content:
+                          if is_kts:
+                              lint_block = "    lint {\n        checkReleaseBuilds = false\n        abortOnError = false\n    }\n"
+                          else:
+                              lint_block = "    lintOptions {\n        checkReleaseBuilds false\n        abortOnError false\n    }\n"
+                          content = re.sub(r"(^\s*android\s*\{)", r"\1\n" + lint_block, content, count=1, flags=re.MULTILINE)
+
                       if content != orig:
                           with open(fpath, "w", encoding="utf-8") as f:
                               f.write(content)
                           print(f"[Patched] {fpath}")
 
-          # 4. 在 gradle.properties 中写入 kotlin.jvm.target.validation.mode=ignore 彻底关闭 Kotlin/Java (11 vs 17) 版本不一致报错
+          # 5. 在 gradle.properties 中写入 kotlin.jvm.target.validation.mode=ignore 并禁用并发缓存冲突
           for prop_path in ["android/gradle.properties", os.path.expanduser("~/.gradle/gradle.properties")]:
               os.makedirs(os.path.dirname(prop_path), exist_ok=True)
               existing = ""
@@ -152,11 +160,19 @@ jobs:
                   with open(prop_path, "a", encoding="utf-8") as pf:
                       pf.write("\nkotlin.jvm.target.validation.mode=ignore\n")
 
-          # 5. 在 Gradle 中让 check*AarMetadata 自动创建输出目录并放行（满足 Gradle 9.3 BundleAar 目录存在性校验），同时对齐 Kotlin jvmTarget
+          # 6. 在 Gradle 初始化脚本中过滤掉所有大小写 lint 任务（包含 lintVitalAnalyzeRelease）并放行 check*AarMetadata
           init_dir = os.path.expanduser("~/.gradle/init.d")
           os.makedirs(init_dir, exist_ok=True)
           with open(os.path.join(init_dir, "fix_flutter_plugins.gradle"), "w", encoding="utf-8") as gf:
               gf.write('''
+          gradle.taskGraph.whenReady { graph ->
+              graph.allTasks.each { task ->
+                  def lower = task.name.toLowerCase()
+                  if (lower.contains("lint")) {
+                      task.enabled = false
+                  }
+              }
+          }
           gradle.projectsEvaluated {
               rootProject.allprojects { proj ->
                   proj.tasks.matching { it.name.startsWith("check") && it.name.endsWith("AarMetadata") }.configureEach { task ->
@@ -165,7 +181,7 @@ jobs:
                           task.outputs.files.each { f -> f.mkdirs() }
                       }
                   }
-                  proj.tasks.matching { it.name.contains("Lint") }.configureEach {
+                  proj.tasks.matching { it.name.toLowerCase().contains("lint") }.configureEach {
                       enabled = false
                   }
                   def javaTask = proj.tasks.findByName("compileReleaseJavaWithJavac") ?: proj.tasks.findByName("compileDebugJavaWithJavac")
@@ -180,7 +196,7 @@ jobs:
               }
           }
           ''')
-          print("[Success] Gradle 9.3 AAR Metadata directory generator and Kotlin JVM target sync installed.")
+          print("[Success] AGP 9.1 lintVitalAnalyzeRelease disabler and Gradle 9.3 AAR Metadata fix installed.")
           EOF
 
       - name: 7. 编译正式版 Android APK
