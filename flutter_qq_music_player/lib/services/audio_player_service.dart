@@ -1,14 +1,16 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/eq_preset_model.dart';
 import '../models/song_model.dart';
 import 'car_auto_play_service.dart';
 import 'local_scanner_service.dart';
 import 'online_search_service.dart';
-import 'synth_wav_generator.dart';
 
 /// 全局播放器状态快照
 class PlayerStateModel {
@@ -57,7 +59,6 @@ class PlayerStateModel {
           ? currentQueue[currentIndex]
           : (allSongs.isNotEmpty ? allSongs.first : null);
 
-  /// 根据当前播放进度计算高亮的 LRC 歌词行下标
   int get currentLyricIndex {
     final song = currentSong;
     if (song == null || song.lyrics.isEmpty) return -1;
@@ -72,14 +73,14 @@ class PlayerStateModel {
     return idx;
   }
 
-  /// 根据当前 Tab ('all', 'fav', 'wifi', 'lossless') 和搜索关键词过滤显示的曲目列表
   List<SongModel> get filteredSongs {
     return allSongs.where((s) {
       if (activePlaylistFilter == 'fav' && !s.isFavorite) return false;
       if (activePlaylistFilter == 'wifi' &&
           !s.album.contains('Wi-Fi') &&
           !s.album.contains('导入') &&
-          !s.album.contains('在线')) {
+          !s.album.contains('在线') &&
+          !s.folderName.contains('在线')) {
         return false;
       }
       if (activePlaylistFilter == 'lossless' &&
@@ -145,23 +146,24 @@ class PlayerStateModel {
   }
 }
 
-/// 全局音频播放与附加功能控制器
+/// 全局音频播放与曲库管理控制器（无内置假歌、支持单曲删除、支持退出即停播）
 class AudioPlayerController extends StateNotifier<PlayerStateModel> {
   final AudioPlayer _audioPlayer = AudioPlayer();
   final LocalScannerService _scannerService = LocalScannerService();
   final OnlineSearchService _onlineSearchService = OnlineSearchService();
   CarAutoPlayService? _carService;
   Timer? _sleepTimer;
+  Set<String> _deletedSongIds = {};
 
   AudioPlayerController()
       : super(
           PlayerStateModel(
-            allSongs: _defaultDemoSongs,
-            currentQueue: _defaultDemoSongs,
+            allSongs: const [], // 不再塞入任何假曲调内置歌曲，完全展示用户扫描/导入/搜索的真歌
+            currentQueue: const [],
             currentIndex: 0,
             isPlaying: false,
             position: Duration.zero,
-            duration: _defaultDemoSongs.first.duration,
+            duration: const Duration(minutes: 3, seconds: 30),
             visualStyle: PlayerVisualStyle.vinyl,
             loopMode: LoopPlayMode.sequence,
             playbackSpeed: 1.0,
@@ -177,9 +179,14 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
   }
 
   Future<void> _initCarAndStartupScan() async {
+    final prefs = await SharedPreferences.getInstance();
+    _deletedSongIds = (prefs.getStringList('deleted_song_ids') ?? []).toSet();
+
     _carService = CarAutoPlayService(
       onCarConnectedTriggerPlay: (_) {
-        if (state.carAutoPlayEnabled && !state.isPlaying) {
+        if (state.carAutoPlayEnabled &&
+            !state.isPlaying &&
+            state.currentQueue.isNotEmpty) {
           playSongAt(state.currentIndex);
         }
       },
@@ -190,7 +197,7 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
       },
     );
     await _carService?.init();
-    // 启动后自动尝试免导入扫描手机上的真实本地音乐
+    // 启动后自动扫描手机本地真实音频
     await scanLocalMusic();
   }
 
@@ -215,28 +222,36 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
     });
   }
 
-  /// 扫描手机本地音乐库（将真实手机音乐合并进曲库顶部）
+  /// 扫描手机本地音乐库（自动过滤掉用户已删除的歌曲）
   Future<int> scanLocalMusic() async {
     final scanned = await _scannerService.autoScanAllDeviceMusic();
-    if (scanned.isNotEmpty) {
-      final existingIds = scanned.map((e) => e.id).toSet();
+    final filteredScanned =
+        scanned.where((s) => !_deletedSongIds.contains(s.id)).toList();
+    if (filteredScanned.isNotEmpty) {
+      final existingIds = filteredScanned.map((e) => e.id).toSet();
       final kept = state.allSongs
-          .where((s) => !existingIds.contains(s.id))
+          .where(
+            (s) =>
+                !existingIds.contains(s.id) && !_deletedSongIds.contains(s.id),
+          )
           .toList();
-      final merged = [...scanned, ...kept];
+      final merged = [...filteredScanned, ...kept];
       state = state.copyWith(
         allSongs: merged,
         currentQueue: merged,
         currentIndex: 0,
       );
     }
-    return scanned.length;
+    return filteredScanned.length;
   }
 
-  /// 从文件选择器手动导入本地音频（适配 iOS 与自定义文件夹）
+  /// 从文件选择器手动导入本地音频
   Future<int> importAudioFiles() async {
     final imported = await _scannerService.pickAndImportAudioFiles();
     if (imported.isNotEmpty) {
+      for (final s in imported) {
+        _deletedSongIds.remove(s.id);
+      }
       final existingIds = imported.map((e) => e.id).toSet();
       final kept = state.allSongs
           .where((s) => !existingIds.contains(s.id))
@@ -252,23 +267,45 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
     return imported.length;
   }
 
-  /// 联网搜索歌曲（对接网易云 + iTunes 双通道全网真曲库，并合并内置无损精选曲库）
-  Future<List<SongModel>> searchOnlineSongs(String keyword) async {
-    final kw = keyword.trim();
-    final onlineResults = await _onlineSearchService.searchOnlineSongs(kw);
-    final localMatches = _cloudFallbackSongs
-        .where(
-          (s) =>
-              kw.isEmpty ||
-              s.title.toLowerCase().contains(kw.toLowerCase()) ||
-              s.artist.toLowerCase().contains(kw.toLowerCase()),
-        )
-        .toList();
-    return [...onlineResults, ...localMatches];
+  /// 删除指定歌曲（若正在播放该歌曲则先停止或切歌，并记录已删除 ID 防止重启恢复）
+  Future<void> deleteSong(String songId) async {
+    _deletedSongIds.add(songId);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList('deleted_song_ids', _deletedSongIds.toList());
+
+    final wasCurrent = state.currentSong?.id == songId;
+    if (wasCurrent) {
+      await _audioPlayer.stop();
+    }
+
+    final updatedAll = state.allSongs.where((s) => s.id != songId).toList();
+    final updatedQueue =
+        state.currentQueue.where((s) => s.id != songId).toList();
+
+    int nextIndex = state.currentIndex;
+    if (nextIndex >= updatedQueue.length) {
+      nextIndex = max(0, updatedQueue.length - 1);
+    }
+
+    state = state.copyWith(
+      allSongs: updatedAll,
+      currentQueue: updatedQueue,
+      currentIndex: nextIndex,
+      isPlaying: wasCurrent ? false : state.isPlaying,
+      position: wasCurrent ? Duration.zero : state.position,
+    );
   }
 
-  /// 将联网搜索到的歌曲加入播放队列顶部并立即出声播放
+  /// 联网搜索歌曲（仅在用户输入关键字时调用真实网络接口，绝不返回假曲调内置歌曲）
+  Future<List<SongModel>> searchOnlineSongs(String keyword) async {
+    final kw = keyword.trim();
+    if (kw.isEmpty) return [];
+    return _onlineSearchService.searchOnlineSongs(kw);
+  }
+
+  /// 将联网搜索到的歌曲加入播放队列顶部并立即播放真人原唱
   Future<void> addAndPlaySong(SongModel song) async {
+    _deletedSongIds.remove(song.id);
     final existingIdx = state.allSongs.indexWhere((s) => s.id == song.id);
     List<SongModel> updated;
     if (existingIdx != -1) {
@@ -286,7 +323,6 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
     await playSongAt(0);
   }
 
-  /// 根据歌曲 ID 触发播放
   Future<void> playSongById(String songId) async {
     final idx = state.currentQueue.indexWhere((s) => s.id == songId);
     if (idx != -1) {
@@ -294,7 +330,7 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
     }
   }
 
-  /// 播放指定下标歌曲（支持：1. 手机真实本地音频  2. http/https 在线流媒体  3. demo:// 内置合成旋律 WAV，确保 100% 有声音！）
+  /// 播放指定下标歌曲（仅播放真实本地音频文件或真实 HTTPS 在线演唱音频流，并自动拉取云端同步歌词）
   Future<void> playSongAt(int index) async {
     if (index < 0 || index >= state.currentQueue.length) return;
     final song = state.currentQueue[index];
@@ -305,7 +341,6 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
       isPlaying: true,
     );
 
-    // 若该歌曲尚未加载详细时间轴歌词（比如刚扫描到的本地 MP3 或刚搜到的在线歌曲），后台自动匹配云端同步 LRC 歌词！
     if (song.lyrics.length <= 3) {
       _autoMatchCloudLyrics(index, song);
     }
@@ -313,32 +348,27 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
     try {
       if (song.filePath.startsWith('http://') ||
           song.filePath.startsWith('https://')) {
-        try {
-          await _audioPlayer.setUrl(song.filePath);
-        } catch (_) {
-          // 若部分 VIP 在线歌曲外链受限，自动无缝回退至高保真合成器音频，防止无声卡死
-          final wavPath = await SynthWavGenerator.getOrCreatePlayableWav(
-            song.id,
-            [261.63, 329.63, 392.00, 523.25, 440.00, 392.00, 329.63, 293.66],
-            durationSeconds: 28,
-          );
-          await _audioPlayer.setFilePath(wavPath);
-        }
-      } else if (song.filePath.startsWith('demo://')) {
-        // 为内置演示歌曲实时生成真实可听的 16-bit WAV 旋律音频文件并播放！
-        final wavPath = await SynthWavGenerator.getOrCreatePlayableWav(
-          song.id,
-          _melodyMap[song.id] ??
-              [261.63, 293.66, 329.63, 392.00, 440.00, 392.00, 329.63, 293.66],
-          durationSeconds: 28,
-        );
-        await _audioPlayer.setFilePath(wavPath);
+        await _audioPlayer.setUrl(song.filePath);
       } else {
         await _audioPlayer.setFilePath(song.filePath);
       }
       await _audioPlayer.setSpeed(state.playbackSpeed);
       await _audioPlayer.play();
-    } catch (_) {}
+    } catch (_) {
+      // 如果某条网易云外链因为版权重定向失败，自动用【歌名+歌手】从 iTunes 通道获取真人原唱流替换播放
+      try {
+        final backups = await _onlineSearchService
+            .searchOnlineSongs('${song.title} ${song.artist}');
+        final itunesMatch = backups.where((b) => b.id.startsWith('itunes_')).toList();
+        if (itunesMatch.isNotEmpty) {
+          await _audioPlayer.setUrl(itunesMatch.first.filePath);
+          await _audioPlayer.setSpeed(state.playbackSpeed);
+          await _audioPlayer.play();
+          return;
+        }
+      } catch (_) {}
+      state = state.copyWith(isPlaying: false);
+    }
   }
 
   Future<void> _autoMatchCloudLyrics(int queueIndex, SongModel song) async {
@@ -357,8 +387,8 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
   }
 
   Future<void> togglePlayPause() async {
+    if (state.currentQueue.isEmpty) return;
     if (!state.isPlaying) {
-      // 如果当前播放器还没有加载过音频源，直接调用 playSongAt 确保出声
       if (_audioPlayer.processingState == ProcessingState.idle) {
         await playSongAt(state.currentIndex);
         return;
@@ -382,6 +412,29 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
     } catch (_) {}
   }
 
+  /// 彻底停止播放并释放音频焦点（用于退出播放器或关闭应用时立即停播）
+  Future<void> stopPlaybackCompletely() async {
+    _sleepTimer?.cancel();
+    state = state.copyWith(isPlaying: false, position: Duration.zero);
+    try {
+      await _audioPlayer.stop();
+    } catch (_) {}
+  }
+
+  /// 停止音乐并彻底退出 App 进程
+  Future<void> stopAndExitApp() async {
+    await stopPlaybackCompletely();
+    try {
+      await _audioPlayer.dispose();
+    } catch (_) {}
+    if (Platform.isAndroid) {
+      SystemNavigator.pop();
+      exit(0);
+    } else {
+      exit(0);
+    }
+  }
+
   Future<void> seekTo(Duration target) async {
     state = state.copyWith(position: target);
     try {
@@ -389,7 +442,6 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
     } catch (_) {}
   }
 
-  /// 下一首（根据顺序、单曲循环、随机模式计算）
   Future<void> nextSong({bool autoTriggered = false}) async {
     if (state.currentQueue.isEmpty) return;
     if (autoTriggered && state.loopMode == LoopPlayMode.single) {
@@ -413,7 +465,6 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
     await playSongAt(prevIdx);
   }
 
-  /// 切换三种播放页视觉样式（经典黑胶 / 沉浸大图 / 流光卡片）
   void setVisualStyle(PlayerVisualStyle style) {
     state = state.copyWith(visualStyle: style, showLyricsInline: false);
   }
@@ -435,14 +486,12 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
     _carService?.updateSettings(autoPlay: enabled);
   }
 
-  /// 循环切换播放模式
   void cycleLoopMode() {
     final modes = LoopPlayMode.values;
     final nextMode = modes[(state.loopMode.index + 1) % modes.length];
     state = state.copyWith(loopMode: nextMode);
   }
 
-  /// 切换歌曲收藏红心状态
   void toggleFavorite(String songId) {
     final updatedAll = state.allSongs.map((s) {
       return s.id == songId ? s.copyWith(isFavorite: !s.isFavorite) : s;
@@ -453,7 +502,6 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
     state = state.copyWith(allSongs: updatedAll, currentQueue: updatedQueue);
   }
 
-  /// 设置播放倍速 (0.5x ~ 2.0x)
   Future<void> setPlaybackSpeed(double speed) async {
     state = state.copyWith(playbackSpeed: speed);
     try {
@@ -461,7 +509,6 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
     } catch (_) {}
   }
 
-  /// 切换均衡器预设音效
   void applyEqPreset(EqPresetModel preset) {
     state = state.copyWith(
       activeEqPreset: preset,
@@ -469,7 +516,6 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
     );
   }
 
-  /// 手动调节单个频段增益 (-12dB ~ +12dB)
   void updateEqBand(int bandIndex, double gainDb) {
     final updated = List<double>.from(state.customEqGains);
     updated[bandIndex] = gainDb;
@@ -480,7 +526,6 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
     state = state.copyWith(surround3dEnabled: enabled);
   }
 
-  /// 开启睡眠定时关闭（按分钟倒计时）
   void startSleepTimer(int minutes) {
     _sleepTimer?.cancel();
     if (minutes <= 0) {
@@ -513,145 +558,10 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
   void dispose() {
     _sleepTimer?.cancel();
     _carService?.dispose();
+    _audioPlayer.stop();
     _audioPlayer.dispose();
     super.dispose();
   }
-
-  static const Map<String, List<double>> _melodyMap = {
-    'demo_1': [261.63, 293.66, 329.63, 392.00, 329.63, 293.66, 261.63, 196.00],
-    'demo_2': [220.00, 261.63, 329.63, 440.00, 392.00, 329.63, 293.66, 261.63],
-    'demo_3': [196.00, 246.94, 293.66, 392.00, 349.23, 293.66, 246.94, 196.00],
-    'demo_4': [293.66, 349.23, 440.00, 523.25, 440.00, 392.00, 349.23, 293.66],
-    'cloud_1': [329.63, 392.00, 440.00, 392.00, 329.63, 293.66, 261.63, 293.66],
-    'cloud_2': [293.66, 329.63, 392.00, 440.00, 523.25, 440.00, 392.00, 329.63],
-    'cloud_3': [246.94, 293.66, 369.99, 440.00, 392.00, 329.63, 293.66, 246.94],
-  };
-
-  static final List<SongModel> _defaultDemoSongs = [
-    const SongModel(
-      id: 'demo_1',
-      title: '晴天 (无损臻品母带)',
-      artist: '周杰伦',
-      album: '叶惠美',
-      filePath: 'demo://qingtian.wav',
-      duration: Duration(seconds: 28),
-      format: 'FLAC · 24bit/96kHz',
-      dominantColor: Color(0xFF00C471),
-      accentColor: Color(0xFF073B28),
-      isFavorite: true,
-      lyrics: [
-        LyricLine(timestamp: Duration(seconds: 0), text: '故事的小黄花 从出生那年就飘着'),
-        LyricLine(timestamp: Duration(seconds: 4), text: '童年的荡秋千 随记忆一直晃到现在'),
-        LyricLine(timestamp: Duration(seconds: 9), text: 'Re So So Si Do Si La So La Si Si Si Si La Si La So'),
-        LyricLine(timestamp: Duration(seconds: 14), text: '吹着前奏望着天空 我想起花瓣试着掉落'),
-        LyricLine(timestamp: Duration(seconds: 19), text: '为你翘课的那一天 花落的那一天'),
-        LyricLine(timestamp: Duration(seconds: 24), text: '消失的下雨天 我好想再淋一遍'),
-      ],
-    ),
-    const SongModel(
-      id: 'demo_2',
-      title: '泡沫 (银河全景声版)',
-      artist: 'G.E.M. 邓紫棋',
-      album: 'Xposed',
-      filePath: 'demo://paomo.wav',
-      duration: Duration(seconds: 28),
-      format: 'FLAC · SQ无损',
-      dominantColor: Color(0xFF6366F1),
-      accentColor: Color(0xFF1E1B4B),
-      isFavorite: true,
-      lyrics: [
-        LyricLine(timestamp: Duration(seconds: 0), text: '阳光下的泡沫 是彩色的'),
-        LyricLine(timestamp: Duration(seconds: 6), text: '就像被骗的我 是幸福的'),
-        LyricLine(timestamp: Duration(seconds: 13), text: '追究什么对错 你的谎言 基于你还爱我'),
-        LyricLine(timestamp: Duration(seconds: 20), text: '美丽的泡沫 虽然一刹花火'),
-      ],
-    ),
-    const SongModel(
-      id: 'demo_3',
-      title: '夜曲 (黑胶典藏版)',
-      artist: '周杰伦',
-      album: '十一月的萧邦',
-      filePath: 'demo://yequ.wav',
-      duration: Duration(seconds: 28),
-      format: 'WAV · Hi-Res',
-      dominantColor: Color(0xFFEC4899),
-      accentColor: Color(0xFF4C0519),
-      isFavorite: false,
-      lyrics: [
-        LyricLine(timestamp: Duration(seconds: 0), text: '一群嗜血的蚂蚁 被腐肉所吸引'),
-        LyricLine(timestamp: Duration(seconds: 7), text: '我面无表情 看孤独的风景'),
-        LyricLine(timestamp: Duration(seconds: 14), text: '为你弹奏萧邦的夜曲 纪念我死去的爱情'),
-        LyricLine(timestamp: Duration(seconds: 21), text: '跟夜风一样的声音 心碎得很好听'),
-      ],
-    ),
-    const SongModel(
-      id: 'demo_4',
-      title: '光年之外 (Wi-Fi/云端导入)',
-      artist: 'G.E.M. 邓紫棋',
-      album: 'Wi-Fi 局域网导入',
-      filePath: 'demo://guangnian.wav',
-      duration: Duration(seconds: 28),
-      format: 'MP3 · 320kbps',
-      dominantColor: Color(0xFF0EA5E9),
-      accentColor: Color(0xFF082F49),
-      isFavorite: false,
-      lyrics: [
-        LyricLine(timestamp: Duration(seconds: 0), text: '感受停在我发端的指尖'),
-        LyricLine(timestamp: Duration(seconds: 7), text: '如何瞬间 冻结时间'),
-        LyricLine(timestamp: Duration(seconds: 15), text: '记住望着我坚定的双眼'),
-        LyricLine(timestamp: Duration(seconds: 22), text: '也许已经 没有明天'),
-      ],
-    ),
-  ];
-
-  static final List<SongModel> _cloudFallbackSongs = [
-    const SongModel(
-      id: 'cloud_1',
-      title: '稻香 (24bit 至尊无损)',
-      artist: '周杰伦',
-      album: '魔杰座 · 在线云端',
-      filePath: 'demo://daoxiang.wav',
-      duration: Duration(seconds: 28),
-      format: 'FLAC · 在线云端',
-      dominantColor: Color(0xFF10B981),
-      accentColor: Color(0xFF064E3B),
-      lyrics: [
-        LyricLine(timestamp: Duration.zero, text: '对这个世界如果你有太多的抱怨'),
-        LyricLine(timestamp: Duration(seconds: 7), text: '跌倒了就不敢继续往前走'),
-        LyricLine(timestamp: Duration(seconds: 15), text: '还记得你说家是唯一的城堡 随着稻香河流继续奔跑'),
-      ],
-    ),
-    const SongModel(
-      id: 'cloud_2',
-      title: '江南 (DSD64 母带重制版)',
-      artist: '林俊杰',
-      album: '第二天堂 · 在线云端',
-      filePath: 'demo://jiangnan.wav',
-      duration: Duration(seconds: 28),
-      format: 'DSF · DSD母带',
-      dominantColor: Color(0xFF06B6D4),
-      accentColor: Color(0xFF164E63),
-      lyrics: [
-        LyricLine(timestamp: Duration.zero, text: '风到这里就是粘 粘住过客的思念'),
-        LyricLine(timestamp: Duration(seconds: 8), text: '雨到了这里缠成线 缠着我们流连人世间'),
-      ],
-    ),
-    const SongModel(
-      id: 'cloud_3',
-      title: 'Hotel California (加州旅馆 现场版)',
-      artist: 'Eagles',
-      album: 'Hell Freezes Over · 在线云端',
-      filePath: 'demo://hotel.wav',
-      duration: Duration(seconds: 28),
-      format: 'APE · 发烧原盘',
-      dominantColor: Color(0xFFF59E0B),
-      accentColor: Color(0xFF451A03),
-      lyrics: [
-        LyricLine(timestamp: Duration.zero, text: 'On a dark desert highway, cool wind in my hair'),
-        LyricLine(timestamp: Duration(seconds: 8), text: 'Welcome to the Hotel California'),
-      ],
-    ),
-  ];
 }
 
 final audioPlayerProvider =

@@ -25,7 +25,27 @@ class MainScreen extends ConsumerStatefulWidget {
   ConsumerState<MainScreen> createState() => _MainScreenState();
 }
 
-class _MainScreenState extends ConsumerState<MainScreen> {
+class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _wifiServer?.stop();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 当用户划掉任务或退出播放器进程时，立即停止播放音乐
+    if (state == AppLifecycleState.detached) {
+      ref.read(audioPlayerProvider.notifier).stopPlaybackCompletely();
+    }
+  }
   WifiTransferServer? _wifiServer;
   String? _wifiUrl;
 
@@ -75,9 +95,9 @@ class _MainScreenState extends ConsumerState<MainScreen> {
     );
   }
 
-  /// 弹窗 2：打开全网在线搜歌即点即播窗口
+  /// 弹窗 2：打开全网在线搜歌窗口（默认空白无任何预置歌曲，完全由用户输入关键词搜索真人原唱流）
   void _openOnlineSearchModal(AudioPlayerController controller) {
-    final TextEditingController searchCtrl = TextEditingController(text: '周杰伦');
+    final TextEditingController searchCtrl = TextEditingController();
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -87,25 +107,26 @@ class _MainScreenState extends ConsumerState<MainScreen> {
       ),
       builder: (ctx) {
         List<SongModel> results = [];
-        bool loading = true;
-        bool initialized = false;
+        bool loading = false;
+        bool hasSearched = false;
 
         return StatefulBuilder(
           builder: (ctx, setModalState) {
             Future<void> runSearch(String kw) async {
-              setModalState(() => loading = true);
-              final list = await controller.searchOnlineSongs(kw);
+              final q = kw.trim();
+              if (q.isEmpty) return;
+              FocusScope.of(ctx).unfocus();
+              setModalState(() {
+                loading = true;
+                hasSearched = true;
+              });
+              final list = await controller.searchOnlineSongs(q);
               if (ctx.mounted) {
                 setModalState(() {
                   results = list;
                   loading = false;
                 });
               }
-            }
-
-            if (!initialized) {
-              initialized = true;
-              Future.microtask(() => runSearch('周杰伦'));
             }
 
             return Padding(
@@ -207,7 +228,29 @@ class _MainScreenState extends ConsumerState<MainScreen> {
                                 color: Color(0xFF00D676),
                               ),
                             )
-                          : ListView.separated(
+                          : !hasSearched
+                              ? const Center(
+                                  child: Text(
+                                    '请在上方输入框输入您想听的歌名或歌手，然后点击「立即搜索」',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      color: Colors.white54,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                )
+                              : results.isEmpty
+                                  ? const Center(
+                                      child: Text(
+                                        '未检索到可直连的在线音源，请尝试更换关键词（如歌手+歌名）',
+                                        textAlign: TextAlign.center,
+                                        style: TextStyle(
+                                          color: Colors.white54,
+                                          fontSize: 13,
+                                        ),
+                                      ),
+                                    )
+                                  : ListView.separated(
                               itemCount: results.length,
                               separatorBuilder: (_, __) => const SizedBox(height: 8),
                               itemBuilder: (ctx, i) {
@@ -475,7 +518,43 @@ class _MainScreenState extends ConsumerState<MainScreen> {
         ? song.lyrics[currentLyricIdx].text
         : '纯音乐 / 本地全格式无损曲库';
 
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        final shouldExit = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF141E28),
+            title: const Text(
+              '退出悦听播放器',
+              style: TextStyle(color: Colors.white, fontSize: 16),
+            ),
+            content: const Text(
+              '退出后将立即停止播放音乐并关闭后台进程，确定退出吗？',
+              style: TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('取消', style: TextStyle(color: Colors.white54)),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.redAccent,
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('立即停止并退出'),
+              ),
+            ],
+          ),
+        );
+        if (shouldExit == true) {
+          await controller.stopAndExitApp();
+        }
+      },
+      child: Scaffold(
       backgroundColor: const Color(0xFF090E14),
       body: SafeArea(
         child: CustomScrollView(
@@ -643,6 +722,15 @@ class _MainScreenState extends ConsumerState<MainScreen> {
                             backgroundColor: Colors.transparent,
                             builder: (_) => const SleepTimerAndSpeedSheet(),
                           ),
+                        ),
+                        // 8. 退出播放器并停止播放
+                        _buildTopPillButton(
+                          label: '🚪 退出并停播',
+                          bgColor: Colors.redAccent.withOpacity(0.18),
+                          textColor: Colors.redAccent,
+                          borderColor: Colors.redAccent.withOpacity(0.45),
+                          isBold: true,
+                          onTap: () => controller.stopAndExitApp(),
                         ),
                       ],
                     ),
@@ -1321,6 +1409,7 @@ class _MainScreenState extends ConsumerState<MainScreen> {
                                     ),
                                   ),
                                   IconButton(
+                                    tooltip: '收藏',
                                     icon: Icon(
                                       item.isFavorite
                                           ? Icons.favorite_rounded
@@ -1332,6 +1421,25 @@ class _MainScreenState extends ConsumerState<MainScreen> {
                                     ),
                                     onPressed: () =>
                                         controller.toggleFavorite(item.id),
+                                  ),
+                                  IconButton(
+                                    tooltip: '从列表删除此歌曲',
+                                    icon: const Icon(
+                                      Icons.delete_outline_rounded,
+                                      color: Colors.white38,
+                                      size: 20,
+                                    ),
+                                    onPressed: () async {
+                                      await controller.deleteSong(item.id);
+                                      if (context.mounted) {
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          SnackBar(
+                                            content: Text('已删除《${item.title}》'),
+                                            duration: const Duration(seconds: 2),
+                                          ),
+                                        );
+                                      }
+                                    },
                                   ),
                                 ],
                               ),
@@ -1345,6 +1453,7 @@ class _MainScreenState extends ConsumerState<MainScreen> {
             ),
           ],
         ),
+      ),
       ),
     );
   }

@@ -2,94 +2,160 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// 预设大模型服务商配置模板（兼容所有 OpenAI 格式接口及 Gemini/Claude/自定义网关）
+class QuickModelOption {
+  final String label;
+  final String modelId;
+  const QuickModelOption(this.label, this.modelId);
+}
+
 class LlmProviderPreset {
   final String id;
   final String name;
-  final String baseUrl;
+  final String defaultBaseUrl;
   final String defaultModel;
-  final String description;
+  final String hint;
+  final List<QuickModelOption> quickModels;
 
   const LlmProviderPreset({
     required this.id,
     required this.name,
-    required this.baseUrl,
+    required this.defaultBaseUrl,
     required this.defaultModel,
-    required this.description,
+    required this.hint,
+    this.quickModels = const [],
   });
+}
 
-  static const List<LlmProviderPreset> builtinProviders = [
-    LlmProviderPreset(
-      id: 'deepseek',
-      name: 'DeepSeek (深度求索)',
-      baseUrl: 'https://api.deepseek.com/v1',
-      defaultModel: 'deepseek-chat',
-      description: '官方兼容 OpenAI 协议，支持 deepseek-chat (V3) 与 deepseek-reasoner (R1)',
-    ),
+class UniversalLlmService {
+  static const List<LlmProviderPreset> presets = [
     LlmProviderPreset(
       id: 'volcengine',
-      name: '火山引擎 (豆包大模型)',
-      baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
-      defaultModel: 'doubao-pro-32k',
-      description: '火山方舟大模型平台，可填入推理接入点 ID (ep-xxxx) 或模型名称',
+      name: '火山引擎 (火山方舟)',
+      defaultBaseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+      defaultModel: 'doubao-seed-evolving',
+      hint: '已严格对应你火山方舟「开通管理」中的 7 款已开通模型，点击下方按钮即可自动填入官方 Model ID',
+      quickModels: [
+        QuickModelOption('Doubao-Seed-Evolving (推荐)', 'doubao-seed-evolving'),
+        QuickModelOption('Doubao-Seed-2.1-turbo', 'doubao-seed-2-1-turbo-260628'),
+        QuickModelOption('Doubao-Seed-2.0-mini', 'doubao-seed-2-0-mini-260428'),
+        QuickModelOption('Doubao-Seed-2.1-lite', 'doubao-seed-2-1-lite-260915'),
+        QuickModelOption('DeepSeek-V4.1-Flash', 'deepseek-v4-1-flash-261017'),
+        QuickModelOption('DeepSeek-V4.1-Flash经济版', 'deepseek-v4-1-flash-economy-261017'),
+        QuickModelOption('GLM-5.3-Flash', 'glm-5-3-flash-260828'),
+      ],
+    ),
+    LlmProviderPreset(
+      id: 'deepseek',
+      name: 'DeepSeek (深度求索官方)',
+      defaultBaseUrl: 'https://api.deepseek.com/v1',
+      defaultModel: 'deepseek-chat',
+      hint: '支持 deepseek-chat 与 deepseek-reasoner',
+      quickModels: [
+        QuickModelOption('DeepSeek-Chat', 'deepseek-chat'),
+        QuickModelOption('DeepSeek-Reasoner', 'deepseek-reasoner'),
+      ],
     ),
     LlmProviderPreset(
       id: 'qwen',
       name: '阿里通义千问 (Qwen)',
-      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       defaultModel: 'qwen-plus',
-      description: '阿里云百炼 DashScope 兼容接口，支持 qwen-max / qwen-plus / qwen-turbo',
+      hint: '支持 qwen-max / qwen-plus / qwen-turbo',
+      quickModels: [
+        QuickModelOption('Qwen-Plus', 'qwen-plus'),
+        QuickModelOption('Qwen-Max', 'qwen-max'),
+        QuickModelOption('Qwen-Turbo', 'qwen-turbo'),
+      ],
     ),
     LlmProviderPreset(
       id: 'openai',
       name: 'OpenAI (GPT 系列)',
-      baseUrl: 'https://api.openai.com/v1',
+      defaultBaseUrl: 'https://api.openai.com/v1',
       defaultModel: 'gpt-4o-mini',
-      description: '支持 GPT-4o、GPT-4.1 及所有兼容 OpenAI 格式的中转站',
+      hint: '支持 gpt-4o / gpt-4o-mini / o3-mini',
+      quickModels: [
+        QuickModelOption('GPT-4o-mini', 'gpt-4o-mini'),
+        QuickModelOption('GPT-4o', 'gpt-4o'),
+      ],
     ),
     LlmProviderPreset(
       id: 'gemini',
       name: 'Google Gemini',
-      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
       defaultModel: 'gemini-2.5-flash',
-      description: 'Google 官方 OpenAI 兼容端点，支持 Gemini 2.5 Pro / Flash',
+      hint: '支持 gemini-2.5-flash / gemini-2.5-pro',
+      quickModels: [
+        QuickModelOption('Gemini 2.5 Flash', 'gemini-2.5-flash'),
+        QuickModelOption('Gemini 2.5 Pro', 'gemini-2.5-pro'),
+      ],
     ),
     LlmProviderPreset(
       id: 'meta_llama',
-      name: 'Meta Llama (Groq / OpenRouter / Ollama)',
-      baseUrl: 'https://api.groq.com/openai/v1',
+      name: 'Meta Llama / OpenRouter',
+      defaultBaseUrl: 'https://api.groq.com/openai/v1',
       defaultModel: 'llama-3.3-70b-versatile',
-      description: '支持 Meta Llama 3.3 及任何自建或第三方 OpenAI 兼容网关',
+      hint: '支持 Groq / OpenRouter / Ollama 等任何 OpenAI 兼容接口',
+      quickModels: [
+        QuickModelOption('Llama 3.3 70B', 'llama-3.3-70b-versatile'),
+        QuickModelOption('Llama 3.1 8B', 'llama-3.1-8b-instant'),
+      ],
     ),
   ];
-}
 
-/// AI 解析出的播放器控制指令（实现语音/对话直接操控播放器）
-class AiPlayerCommand {
-  final String action; // 'play_search', 'pause', 'resume', 'next', 'prev', 'set_eq', 'switch_style', 'none'
-  final String? targetQuery;
-  final String replyText;
+  /// 将火山方舟控制台展示名称（如 Doubao-Seed-2.1-turbo、DeepSeek-V4.1-Flash经济版）
+  /// 自动转换为火山引擎 API 调用必填的小写带日期版本号 Model ID
+  static String normalizeVolcengineModelId(String rawModel) {
+    final trimmed = rawModel.trim();
+    final lower = trimmed.toLowerCase();
 
-  const AiPlayerCommand({
-    required this.action,
-    required this.replyText,
-    this.targetQuery,
-  });
-}
+    const Map<String, String> displayToApiModelMap = {
+      'doubao-seed-evolving': 'doubao-seed-evolving',
+      'doubao-seed-2.1-turbo': 'doubao-seed-2-1-turbo-260628',
+      'doubao-seed-2-1-turbo': 'doubao-seed-2-1-turbo-260628',
+      'doubao-seed-2.0-mini': 'doubao-seed-2-0-mini-260428',
+      'doubao-seed-2-0-mini': 'doubao-seed-2-0-mini-260428',
+      'doubao-seed-2.1-lite': 'doubao-seed-2-1-lite-260915',
+      'doubao-seed-2-1-lite': 'doubao-seed-2-1-lite-260915',
+      'doubao-seed-2.1-pro': 'doubao-seed-2-1-pro-260915',
+      'doubao-seed-2-1-pro': 'doubao-seed-2-1-pro-260915',
+      'doubao-seed-2.0-lite': 'doubao-seed-2-0-lite-260428',
+      'doubao-seed-2-0-lite': 'doubao-seed-2-0-lite-260428',
+      'deepseek-v4.1-flash经济版': 'deepseek-v4-1-flash-economy-261017',
+      'deepseek-v4.1-flash-economy': 'deepseek-v4-1-flash-economy-261017',
+      'deepseek-v4-1-flash-economy': 'deepseek-v4-1-flash-economy-261017',
+      'deepseek-v4.1-flash': 'deepseek-v4-1-flash-261017',
+      'deepseek-v4-1-flash': 'deepseek-v4-1-flash-261017',
+      'deepseek-v4-flash': 'deepseek-v4-flash-ga-260731',
+      'deepseek-v4-pro': 'deepseek-v4-pro-ga-260813',
+      'glm-5.3-flash': 'glm-5-3-flash-260828',
+      'glm-5-3-flash': 'glm-5-3-flash-260828',
+      'doubao-pro-32k': 'doubao-seed-evolving',
+      'doubao-1-5-pro-32k-250115': 'doubao-seed-evolving',
+    };
 
-/// 全能大模型网关服务：支持切换任意大模型 API 并返回结构化音乐控制指令与乐评问答
-class UniversalLlmService {
-  String providerId = 'deepseek';
-  String baseUrl = 'https://api.deepseek.com/v1';
+    if (displayToApiModelMap.containsKey(lower)) {
+      return displayToApiModelMap[lower]!;
+    }
+    return trimmed;
+  }
+
+  String providerId = 'volcengine';
+  String baseUrl = 'https://ark.cn-beijing.volces.com/api/v3';
   String apiKey = '';
-  String modelName = 'deepseek-chat';
+  String modelName = 'doubao-seed-evolving';
+  bool enableVoiceTts = true;
 
   Future<void> loadSavedConfig() async {
     final prefs = await SharedPreferences.getInstance();
-    providerId = prefs.getString('llm_provider_id') ?? 'deepseek';
-    baseUrl = prefs.getString('llm_base_url') ?? 'https://api.deepseek.com/v1';
+    providerId = prefs.getString('llm_provider_id') ?? 'volcengine';
+    baseUrl = prefs.getString('llm_base_url') ?? 'https://ark.cn-beijing.volces.com/api/v3';
     apiKey = prefs.getString('llm_api_key') ?? '';
-    modelName = prefs.getString('llm_model_name') ?? 'deepseek-chat';
+    String savedModel = prefs.getString('llm_model_name') ?? 'doubao-seed-evolving';
+    if (providerId == 'volcengine' || baseUrl.contains('volces.com')) {
+      savedModel = normalizeVolcengineModelId(savedModel);
+    }
+    modelName = savedModel;
+    enableVoiceTts = prefs.getBool('llm_voice_tts') ?? true;
   }
 
   Future<void> saveConfig({
@@ -97,137 +163,188 @@ class UniversalLlmService {
     required String baseUrl,
     required String apiKey,
     required String modelName,
+    required bool enableVoiceTts,
   }) async {
     this.providerId = providerId;
     this.baseUrl = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
     this.apiKey = apiKey.trim();
-    this.modelName = modelName.trim();
+    String cleanedModel = modelName.trim();
+    if (providerId == 'volcengine' || this.baseUrl.contains('volces.com')) {
+      cleanedModel = normalizeVolcengineModelId(cleanedModel);
+    }
+    this.modelName = cleanedModel;
+    this.enableVoiceTts = enableVoiceTts;
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('llm_provider_id', this.providerId);
     await prefs.setString('llm_base_url', this.baseUrl);
     await prefs.setString('llm_api_key', this.apiKey);
     await prefs.setString('llm_model_name', this.modelName);
+    await prefs.setBool('llm_voice_tts', this.enableVoiceTts);
   }
 
-  /// 向当前配置的大模型发送用户消息（含当前正在播放的歌曲上下文），并解析返回文本与播放器控制指令
-  Future<AiPlayerCommand> sendChatWithMusicIntent({
-    required String userText,
+  /// 向兼容 OpenAI /chat/completions 规范的大模型接口发送请求
+  /// 针对火山引擎，自动兼容标准方舟端点 (/api/v3) 与订阅套餐端点 (/api/plan/v3)，
+  /// 并自动轮询你在「开通管理」中已开通的全部 7 个模型 ID
+  Future<String> chatWithModel({
+    required String userMessage,
     required String currentSongSummary,
+    required List<String> localSongTitles,
   }) async {
+    if (apiKey.isEmpty) {
+      return _offlineSmartFallback(userMessage, currentSongSummary);
+    }
+
     final systemPrompt = '''
-你是“悦听 (MeloMusic)”跨平台无损音乐播放器的内置 AI 音乐伴侣与智能语音管家。
-当前正在播放的音乐状态：$currentSongSummary。
-你可以陪用户聊音乐故事、鉴赏歌词、按心情推荐歌单，也可以根据用户的意图直接控制播放器。
-如果用户的意图包含操控播放器（例如点歌、切歌、暂停、换音效、切换黑胶/大图/流光卡片样式），请在回答末尾附带一行 JSON 指令标签（如无控制意图则只回答自然语言）：
-[ACTION:{"action":"play_search|next|prev|pause|resume|set_eq|switch_style","query":"歌曲名或参数"}]
-回答请保持温暖、精炼、适合语音播报（控制在 80 字以内）。
+你是“悦听 (MeloMusic)”跨平台音乐播放器的内置 AI 音乐伴侣与语音助手。
+当前正在播放：$currentSongSummary。
+用户本地曲库部分歌曲：${localSongTitles.take(12).join('、')}。
+
+重要规则：
+1. 如果用户表达了“我想听xxx”、“播放xxx”、“搜一下xxx”等点歌意图，请在回复的第一行输出指令标签：[PLAY_SONG:歌名或歌手]，然后再用温暖简短的中文回应用户。
+2. 如果用户说“下一首/切歌”，第一行输出：[ACTION:NEXT]
+3. 如果用户说“上一首”，第一行输出：[ACTION:PREV]
+4. 如果用户说“暂停/停止播放”，第一行输出：[ACTION:PAUSE]
+5. 如果用户说“切换到黑胶/大图/流光卡片”，第一行输出：[STYLE:VINYL] 或 [STYLE:FULLSCREEN] 或 [STYLE:GLASS]
+6. 其余音乐闲聊、歌词赏析或歌手故事，请直接用亲切精炼的中文回答（控制在 100 字以内，适合语音朗读）。
 ''';
 
-    if (apiKey.isEmpty) {
-      return _localFallbackIntentParser(userText);
-    }
+    final bool isVolc = baseUrl.contains('volces.com') || providerId == 'volcengine';
+    final String primaryModel = isVolc ? normalizeVolcengineModelId(modelName) : modelName;
 
-    try {
-      final endpoint = Uri.parse('$baseUrl/chat/completions');
-      final response = await http
-          .post(
-            endpoint,
-            headers: {
-              'Content-Type': 'application/json; charset=utf-8',
-              'Authorization': 'Bearer $apiKey',
-            },
-            body: jsonEncode({
-              'model': modelName,
-              'messages': [
-                {'role': 'system', 'content': systemPrompt},
-                {'role': 'user', 'content': userText},
-              ],
-              'temperature': 0.7,
-            }),
-          )
-          .timeout(const Duration(seconds: 15));
-
-      if (response.statusCode >= 200 && response.statusCode < 300) {
-        final body = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
-        final choices = body['choices'] as List<dynamic>?;
-        final content = (choices != null && choices.isNotEmpty)
-            ? (choices.first['message']['content'] as String? ?? '')
-            : '';
-        return _extractCommandFromReply(content, userText);
-      } else {
-        return AiPlayerCommand(
-          action: 'none',
-          replyText: 'API 请求返回状态码 ${response.statusCode}，请检查 API Key、Base URL 或模型名称（如火山引擎需填写推理接入点 ep-xxxx）。',
-        );
+    final List<String> candidateModels = [primaryModel];
+    if (isVolc) {
+      for (final m in [
+        'doubao-seed-evolving',
+        'doubao-seed-2-1-turbo-260628',
+        'doubao-seed-2-0-mini-260428',
+        'doubao-seed-2-1-lite-260915',
+        'deepseek-v4-1-flash-261017',
+        'deepseek-v4-1-flash-economy-261017',
+        'glm-5-3-flash-260828',
+      ]) {
+        if (!candidateModels.contains(m)) candidateModels.add(m);
       }
-    } catch (e) {
-      return _localFallbackIntentParser(userText);
     }
+
+    final normalizedBase = baseUrl.replaceAll(RegExp(r'/+$'), '');
+    final List<String> candidateBases = [normalizedBase];
+    if (isVolc) {
+      if (!candidateBases.contains('https://ark.cn-beijing.volces.com/api/v3')) {
+        candidateBases.add('https://ark.cn-beijing.volces.com/api/v3');
+      }
+      if (!candidateBases.contains('https://ark.cn-beijing.volces.com/api/plan/v3')) {
+        candidateBases.add('https://ark.cn-beijing.volces.com/api/plan/v3');
+      }
+    }
+
+    String lastErrorDetail = '';
+    int lastStatusCode = 0;
+
+    for (final baseCandidate in candidateBases) {
+      for (final candidateModel in candidateModels) {
+        try {
+          final endpoint = baseCandidate.endsWith('/chat/completions')
+              ? Uri.parse(baseCandidate)
+              : Uri.parse('$baseCandidate/chat/completions');
+
+          final response = await http
+              .post(
+                endpoint,
+                headers: {
+                  'Content-Type': 'application/json; charset=utf-8',
+                  'Authorization': 'Bearer $apiKey',
+                },
+                body: jsonEncode({
+                  'model': candidateModel,
+                  'messages': [
+                    {'role': 'system', 'content': systemPrompt},
+                    {'role': 'user', 'content': userMessage},
+                  ],
+                  'temperature': 0.7,
+                  'max_tokens': 400,
+                }),
+              )
+              .timeout(const Duration(seconds: 20));
+
+          if (response.statusCode == 200) {
+            final decoded = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+            final choices = decoded['choices'] as List<dynamic>?;
+            if (choices != null && choices.isNotEmpty) {
+              final msg = choices.first['message'] as Map<String, dynamic>?;
+              final content = msg?['content']?.toString().trim();
+              if (content != null && content.isNotEmpty) {
+                final prefs = await SharedPreferences.getInstance();
+                if (candidateModel != modelName) {
+                  modelName = candidateModel;
+                  await prefs.setString('llm_model_name', candidateModel);
+                }
+                if (baseCandidate != baseUrl) {
+                  baseUrl = baseCandidate;
+                  await prefs.setString('llm_base_url', baseCandidate);
+                }
+                return content;
+              }
+            }
+          }
+
+          lastStatusCode = response.statusCode;
+          try {
+            final errJson = jsonDecode(utf8.decode(response.bodyBytes));
+            lastErrorDetail = errJson['error']?['message']?.toString() ??
+                errJson['message']?.toString() ??
+                '';
+          } catch (_) {
+            lastErrorDetail = utf8.decode(response.bodyBytes);
+          }
+
+          if (response.statusCode != 404 && response.statusCode != 400) {
+            break;
+          }
+        } catch (e) {
+          lastErrorDetail = e.toString();
+          break;
+        }
+      }
+    }
+
+    if (lastStatusCode == 401 || lastStatusCode == 403) {
+      return 'API 鉴权失败 (状态码 $lastStatusCode)：请检查你粘贴的 API Key 是否完整、有没有多余空格。\n详情：$lastErrorDetail';
+    }
+    if (lastStatusCode == 404) {
+      return 'API 返回 404 (模型未找到)：\n请确认模型名称填写为火山方舟官方 Model ID（如 doubao-seed-evolving 或 doubao-seed-2-1-turbo-260628）。\n原始响应：$lastErrorDetail';
+    }
+    return 'API 请求异常 (状态码 $lastStatusCode)：$lastErrorDetail';
   }
 
-  AiPlayerCommand _extractCommandFromReply(String rawReply, String userText) {
-    final reg = RegExp(r'\[ACTION:(\{.*?\})\]');
-    final match = reg.firstMatch(rawReply);
-    final cleanReply = rawReply.replaceAll(reg, '').trim();
-    if (match != null) {
-      try {
-        final map = jsonDecode(match.group(1)!) as Map<String, dynamic>;
-        return AiPlayerCommand(
-          action: (map['action'] as String?) ?? 'none',
-          targetQuery: map['query'] as String?,
-          replyText: cleanReply,
-        );
-      } catch (_) {}
+  String _offlineSmartFallback(String userMessage, String currentSongSummary) {
+    final text = userMessage.trim();
+    if (text.contains('下一首') || text.contains('切歌') || text.contains('换一首')) {
+      return '[ACTION:NEXT]\n好的，马上为您切换到下一首歌曲！';
     }
-    return AiPlayerCommand(action: 'none', replyText: cleanReply);
-  }
-
-  /// 当未配置 API Key 或离线状态时的本地智能意图兜底解析
-  AiPlayerCommand _localFallbackIntentParser(String text) {
-    final t = text.trim();
-    if (t.contains('下一首') || t.contains('切歌') || t.contains('换一首')) {
-      return const AiPlayerCommand(
-        action: 'next',
-        replyText: '好的，马上为您切换到下一首歌曲。',
-      );
+    if (text.contains('上一首')) {
+      return '[ACTION:PREV]\n好的，已为您切回上一首歌曲。';
     }
-    if (t.contains('上一首')) {
-      return const AiPlayerCommand(
-        action: 'prev',
-        replyText: '好的，已为您切回上一首歌曲。',
-      );
+    if (text.contains('暂停') || text.contains('停止') || text.contains('别唱了')) {
+      return '[ACTION:PAUSE]\n好的，音乐已暂停。';
     }
-    if (t.contains('暂停') || t.contains('停止') || t.contains('别唱了')) {
-      return const AiPlayerCommand(
-        action: 'pause',
-        replyText: '已为您暂停播放。',
-      );
+    if (text.contains('流光') || text.contains('卡片')) {
+      return '[STYLE:GLASS]\n已为您切换至流光毛玻璃卡片播放页！';
     }
-    if (t.contains('黑胶') || t.contains('大图') || t.contains('卡片')) {
-      final style = t.contains('大图')
-          ? 'fullscreen'
-          : (t.contains('卡片') ? 'glass' : 'vinyl');
-      return AiPlayerCommand(
-        action: 'switch_style',
-        targetQuery: style,
-        replyText: '已为您切换播放页视觉样式。',
-      );
+    if (text.contains('大图') || text.contains('海报')) {
+      return '[STYLE:FULLSCREEN]\n已为您切换至沉浸式海报大图模式！';
     }
-    if (t.contains('我想听') || t.contains('播放') || t.contains('来一首') || t.contains('搜')) {
-      final query = t
-          .replaceAll(RegExp(r'(我想听|帮我找|播放|来一首|搜索|的歌|歌曲)'), '')
+    if (text.contains('黑胶') || text.contains('唱针')) {
+      return '[STYLE:VINYL]\n已为您切换至经典黑胶唱针模式！';
+    }
+    if (text.contains('我想听') || text.contains('播放') || text.contains('来一首') || text.contains('搜')) {
+      final keyword = text
+          .replaceAll(RegExp(r'(我想听|帮我播放|播放|来一首|搜索|搜一下|的歌)'), '')
           .trim();
-      final finalQuery = query.isEmpty ? '周杰伦' : query;
-      return AiPlayerCommand(
-        action: 'play_search',
-        targetQuery: finalQuery,
-        replyText: '没问题，正在为您全网检索并播放「$finalQuery」！',
-      );
+      if (keyword.isNotEmpty) {
+        return '[PLAY_SONG:$keyword]\n没问题，正在为您全网搜索并播放《$keyword》！';
+      }
     }
-    return const AiPlayerCommand(
-      action: 'none',
-      replyText: '我已准备好连接您的 DeepSeek / 火山引擎 / 通义千问 / GPT / Gemini / Llama API，您可以直接语音对我说“我想听稻香”、“下一首”或询问歌词背景故事！',
-    );
+    return '当前正在播放：$currentSongSummary。\n（提示：您尚未填入大模型 API Key，目前运行在本地离线语音管家模式。点击右上角“配置 API”填入您的火山引擎/DeepSeek/千问 Key 即可开启满血 AI 对话！）';
   }
 }
