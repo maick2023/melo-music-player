@@ -30,8 +30,17 @@ jobs:
 
       - name: 4. 自动补全 Android 原生宿主目录并注入音乐/蓝牙/网络权限
         run: |
+          if [ ! -f "pubspec.yaml" ]; then
+            FOUND_PUB=$(find . -maxdepth 4 -name "pubspec.yaml" | head -n 1 || true)
+            if [ -n "$FOUND_PUB" ]; then
+              SUBDIR=$(dirname "$FOUND_PUB")
+              if [ "$SUBDIR" != "." ]; then
+                cp -rf "$SUBDIR"/* .
+              fi
+            fi
+          fi
           if [ ! -d "android" ]; then
-            flutter create --platforms=android --org com.melomusic.player .
+            flutter create --platforms=android --project-name melo_qq_music_player --org com.melomusic.player .
           fi
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           if ! grep -q "READ_MEDIA_AUDIO" "$MANIFEST"; then
@@ -45,7 +54,7 @@ jobs:
       - name: 6. 统一修复主工程与所有第三方插件 (file_picker / on_audio_query 等) 的 compileSdk 36、namespace 与 Java 17 兼容性
         run: |
           python3 - << 'EOF'
-          import os, re, glob
+          import os, re
 
           pub_cache = os.environ.get("PUB_CACHE", os.path.expanduser("~/.pub-cache"))
           search_roots = ["android", pub_cache]
@@ -65,42 +74,25 @@ jobs:
 
                       # 1. 将主工程及所有插件 (如 :file_picker) 的 compileSdk 强制升至 36
                       content = re.sub(
-                          r"\bcompileSdkVersion\s*(?:\(\s*)?(?:flutter\.compileSdkVersion|\d+|rootProject\.ext\.compileSdkVersion)(?:\s*\))?",
-                          "compileSdk = 36" if is_kts else "compileSdkVersion 36",
+                          r"^(\s*)compileSdk(?:Version)?\b.*$",
+                          r"\1compileSdk = 36" if is_kts else r"\1compileSdkVersion 36",
                           content,
-                      )
-                      content = re.sub(
-                          r"\bcompileSdk\s*=\s*(?:flutter\.compileSdkVersion|\d+)",
-                          "compileSdk = 36",
-                          content,
-                      )
-                      content = re.sub(
-                          r"\bcompileSdk\s+(?:flutter\.compileSdkVersion|\d+)",
-                          "compileSdk = 36" if is_kts else "compileSdk 36",
-                          content,
+                          flags=re.MULTILINE,
                       )
 
                       # 2. 将主工程 app 的 minSdk 设为 24，targetSdk 设为 35
                       if os.path.sep + "app" + os.path.sep in fpath:
                           content = re.sub(
-                              r"\bminSdkVersion\s*(?:\(\s*)?(?:flutter\.minSdkVersion|\d+)(?:\s*\))?",
-                              "minSdk = 24" if is_kts else "minSdkVersion 24",
+                              r"^(\s*)minSdk(?:Version)?\b.*$",
+                              r"\1minSdk = 24" if is_kts else r"\1minSdkVersion 24",
                               content,
+                              flags=re.MULTILINE,
                           )
                           content = re.sub(
-                              r"\bminSdk\s*=\s*(?:flutter\.minSdkVersion|\d+)",
-                              "minSdk = 24",
+                              r"^(\s*)targetSdk(?:Version)?\b.*$",
+                              r"\1targetSdk = 35" if is_kts else r"\1targetSdkVersion 35",
                               content,
-                          )
-                          content = re.sub(
-                              r"\btargetSdkVersion\s*(?:\(\s*)?(?:flutter\.targetSdkVersion|\d+)(?:\s*\))?",
-                              "targetSdk = 35" if is_kts else "targetSdkVersion 35",
-                              content,
-                          )
-                          content = re.sub(
-                              r"\btargetSdk\s*=\s*(?:flutter\.targetSdkVersion|\d+)",
-                              "targetSdk = 35",
-                              content,
+                              flags=re.MULTILINE,
                           )
 
                       # 3. 统一 Java / Kotlin 编译目标版本为 17，消除 jvmTarget 1.8 vs 17 冲突
@@ -138,12 +130,25 @@ jobs:
           gradle.afterProject { proj ->
               if (proj.hasProperty("android")) {
                   try {
-                      proj.android.compileSdkVersion(36)
-                  } catch (Throwable ignored) {}
+                      proj.android.compileSdk = 36
+                  } catch (Throwable ignored) {
+                      try {
+                          proj.android.compileSdkVersion(36)
+                      } catch (Throwable ignored2) {}
+                  }
               }
           }
           gradle.projectsEvaluated {
               rootProject.allprojects { proj ->
+                  if (proj.hasProperty("android")) {
+                      try {
+                          proj.android.compileSdk = 36
+                      } catch (Throwable ignored) {
+                          try {
+                              proj.android.compileSdkVersion(36)
+                          } catch (Throwable ignored2) {}
+                      }
+                  }
                   proj.tasks.withType(JavaCompile).configureEach {
                       sourceCompatibility = JavaVersion.VERSION_17.toString()
                       targetCompatibility = JavaVersion.VERSION_17.toString()
@@ -153,7 +158,7 @@ jobs:
                           task.kotlinOptions.jvmTarget = "17"
                       } catch (Throwable ignored) {}
                   }
-                  proj.tasks.matching { it.name.endsWith("AarMetadata") }.configureEach {
+                  proj.tasks.matching { it.name.contains("AarMetadata") }.configureEach {
                       enabled = false
                   }
               }
@@ -192,8 +197,17 @@ jobs:
 
       - name: 3. 自动补全 iOS 原生宿主工程并注入后台播放/媒体库/麦克风/局域网权限
         run: |
+          if [ ! -f "pubspec.yaml" ]; then
+            FOUND_PUB=$(find . -maxdepth 4 -name "pubspec.yaml" | head -n 1 || true)
+            if [ -n "$FOUND_PUB" ]; then
+              SUBDIR=$(dirname "$FOUND_PUB")
+              if [ "$SUBDIR" != "." ]; then
+                cp -rf "$SUBDIR"/* .
+              fi
+            fi
+          fi
           if [ ! -d "ios" ]; then
-            flutter create --platforms=ios --org com.melomusic.player .
+            flutter create --platforms=ios --project-name melo_qq_music_player --org com.melomusic.player .
           fi
           PLIST="ios/Runner/Info.plist"
           /usr/libexec/PlistBuddy -c "Add :NSAppleMusicUsageDescription string '需要访问您的媒体库以自动扫描并播放本地无损音乐'" "$PLIST" || true
