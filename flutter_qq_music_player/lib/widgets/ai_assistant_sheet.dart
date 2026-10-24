@@ -171,21 +171,58 @@ class _AiAssistantSheetState extends State<AiAssistantSheet> {
                     ),
                   ),
                   const SizedBox(height: 16),
-                  ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF00D676),
-                      foregroundColor: Colors.black,
-                    ),
-                    onPressed: () async {
-                      await _llmService.saveConfig(
-                        providerId: _llmService.providerId,
-                        baseUrl: _baseUrlController.text,
-                        apiKey: _apiKeyController.text,
-                        modelName: _modelController.text,
-                      );
-                      setState(() => _showConfigPanel = false);
-                    },
-                    child: const Text('保存 API 配置并生效'),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          icon: const Icon(
+                            Icons.network_check_rounded,
+                            color: Color(0xFF00E676),
+                            size: 16,
+                          ),
+                          label: const Text(
+                            '测试 API 连通性',
+                            style: TextStyle(color: Color(0xFF00E676), fontSize: 12),
+                          ),
+                          onPressed: () async {
+                            await _llmService.saveConfig(
+                              providerId: _llmService.providerId,
+                              baseUrl: _baseUrlController.text,
+                              apiKey: _apiKeyController.text,
+                              modelName: _modelController.text,
+                            );
+                            final testCmd = await _llmService.sendChatWithMusicIntent(
+                              userText: '请用一句话介绍你自己并确认连接成功',
+                              currentSongSummary: widget.currentSongSummary,
+                            );
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('大模型响应：${testCmd.replyText}')),
+                              );
+                            }
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF00D676),
+                            foregroundColor: Colors.black,
+                          ),
+                          onPressed: () async {
+                            await _llmService.saveConfig(
+                              providerId: _llmService.providerId,
+                              baseUrl: _baseUrlController.text,
+                              apiKey: _apiKeyController.text,
+                              modelName: _modelController.text,
+                            );
+                            setState(() => _showConfigPanel = false);
+                          },
+                          child: const Text('保存配置并返回对话'),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
