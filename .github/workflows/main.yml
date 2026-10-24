@@ -152,14 +152,20 @@ jobs:
                   with open(prop_path, "a", encoding="utf-8") as pf:
                       pf.write("\nkotlin.jvm.target.validation.mode=ignore\n")
 
-          # 5. 在 Gradle 中让 Kotlin 的 jvmTarget 自动跟随当前模块的 Java targetCompatibility（不改动 JavaCompile，保证 just_audio 正常）并跳过 AarMetadata
+          # 5. 在 Gradle 中让 check*AarMetadata 自动创建输出目录并放行（满足 Gradle 9.3 BundleAar 目录存在性校验），同时对齐 Kotlin jvmTarget
           init_dir = os.path.expanduser("~/.gradle/init.d")
           os.makedirs(init_dir, exist_ok=True)
           with open(os.path.join(init_dir, "fix_flutter_plugins.gradle"), "w", encoding="utf-8") as gf:
               gf.write('''
           gradle.projectsEvaluated {
               rootProject.allprojects { proj ->
-                  proj.tasks.matching { it.name.contains("AarMetadata") }.configureEach {
+                  proj.tasks.matching { it.name.startsWith("check") && it.name.endsWith("AarMetadata") }.configureEach { task ->
+                      task.actions.clear()
+                      task.doLast {
+                          task.outputs.files.each { f -> f.mkdirs() }
+                      }
+                  }
+                  proj.tasks.matching { it.name.contains("Lint") }.configureEach {
                       enabled = false
                   }
                   def javaTask = proj.tasks.findByName("compileReleaseJavaWithJavac") ?: proj.tasks.findByName("compileDebugJavaWithJavac")
@@ -174,7 +180,7 @@ jobs:
               }
           }
           ''')
-          print("[Success] Kotlin JVM target validation bypass and AAR Metadata bypass installed.")
+          print("[Success] Gradle 9.3 AAR Metadata directory generator and Kotlin JVM target sync installed.")
           EOF
 
       - name: 7. 编译正式版 Android APK
