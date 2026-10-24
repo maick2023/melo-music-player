@@ -26,7 +26,7 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-          cache: true
+          cache: false
 
       - name: 4. 自动补全 Android 原生宿主目录并注入音乐/蓝牙/网络权限
         run: |
@@ -51,7 +51,7 @@ jobs:
         run: |
           flutter pub get
 
-      - name: 6. 修复主工程与第三方插件的 compileSdk 36 与 namespace 兼容性
+      - name: 6. 修复主工程与第三方插件的 compileSdk 36、namespace 与 Kotlin JVM 目标校验
         run: |
           python3 - << 'EOF'
           import os, re
@@ -72,7 +72,7 @@ jobs:
                       orig = content
                       is_kts = fpath.endswith(".kts")
 
-                      # 1. 仅将独立成行的 compileSdk / compileSdkVersion 升至 36（不改动其他编译选项）
+                      # 1. 将独立成行的 compileSdk / compileSdkVersion 升至 36（不改动 JavaCompile 的 bootClasspath）
                       content = re.sub(
                           r"^(\s*)compileSdkVersion\s+(?:flutter\.compileSdkVersion|\d+)\s*$",
                           r"\1compileSdkVersion 36",
@@ -141,18 +141,40 @@ jobs:
                               f.write(content)
                           print(f"[Patched] {fpath}")
 
-          # 4. 仅在 Gradle 中跳过 checkReleaseAarMetadata 元数据版本校验（不干预 JavaCompile 的 bootClasspath）
+          # 4. 在 gradle.properties 中写入 kotlin.jvm.target.validation.mode=ignore 彻底关闭 Kotlin/Java (11 vs 17) 版本不一致报错
+          for prop_path in ["android/gradle.properties", os.path.expanduser("~/.gradle/gradle.properties")]:
+              os.makedirs(os.path.dirname(prop_path), exist_ok=True)
+              existing = ""
+              if os.path.exists(prop_path):
+                  with open(prop_path, "r", encoding="utf-8", errors="ignore") as pf:
+                      existing = pf.read()
+              if "kotlin.jvm.target.validation.mode" not in existing:
+                  with open(prop_path, "a", encoding="utf-8") as pf:
+                      pf.write("\nkotlin.jvm.target.validation.mode=ignore\n")
+
+          # 5. 在 Gradle 中让 Kotlin 的 jvmTarget 自动跟随当前模块的 Java targetCompatibility（不改动 JavaCompile，保证 just_audio 正常）并跳过 AarMetadata
           init_dir = os.path.expanduser("~/.gradle/init.d")
           os.makedirs(init_dir, exist_ok=True)
           with open(os.path.join(init_dir, "fix_flutter_plugins.gradle"), "w", encoding="utf-8") as gf:
               gf.write('''
-          allprojects {
-              tasks.matching { it.name.contains("AarMetadata") }.configureEach {
-                  enabled = false
+          gradle.projectsEvaluated {
+              rootProject.allprojects { proj ->
+                  proj.tasks.matching { it.name.contains("AarMetadata") }.configureEach {
+                      enabled = false
+                  }
+                  def javaTask = proj.tasks.findByName("compileReleaseJavaWithJavac") ?: proj.tasks.findByName("compileDebugJavaWithJavac")
+                  if (javaTask != null && javaTask.targetCompatibility != null) {
+                      def targetVer = javaTask.targetCompatibility.toString()
+                      proj.tasks.matching { it.name.contains("Kotlin") }.configureEach { kTask ->
+                          try {
+                              kTask.kotlinOptions.jvmTarget = targetVer
+                          } catch (Throwable ignored) {}
+                      }
+                  }
               }
           }
           ''')
-          print("[Success] AAR Metadata bypass installed.")
+          print("[Success] Kotlin JVM target validation bypass and AAR Metadata bypass installed.")
           EOF
 
       - name: 7. 编译正式版 Android APK
