@@ -37,9 +37,23 @@ class LyricLine {
     required this.text,
     this.translation,
   });
+
+  Map<String, dynamic> toJson() => {
+        'ms': timestamp.inMilliseconds,
+        'text': text,
+        if (translation != null) 'tr': translation,
+      };
+
+  factory LyricLine.fromJson(Map<String, dynamic> json) {
+    return LyricLine(
+      timestamp: Duration(milliseconds: (json['ms'] as num?)?.toInt() ?? 0),
+      text: (json['text'] as String?) ?? '',
+      translation: json['tr'] as String?,
+    );
+  }
 }
 
-/// 本地音乐实体模型
+/// 本地与在线音乐实体模型（支持 JSON 持久化记忆）
 class SongModel {
   final String id;
   final String title;
@@ -48,7 +62,7 @@ class SongModel {
   final String filePath;
   final Duration duration;
   final int sizeBytes;
-  final String format; // FLAC, MP3, WAV, M4A
+  final String format; // FLAC, MP3, WAV, M4A, AAC
   final Color dominantColor;
   final Color accentColor;
   final List<LyricLine> lyrics;
@@ -91,6 +105,50 @@ class SongModel {
       lyrics: lyrics ?? this.lyrics,
       isFavorite: isFavorite ?? this.isFavorite,
       folderName: folderName,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        'artist': artist,
+        'album': album,
+        'filePath': filePath,
+        'durationMs': duration.inMilliseconds,
+        'sizeBytes': sizeBytes,
+        'format': format,
+        'dominantColor': dominantColor.value,
+        'accentColor': accentColor.value,
+        'isFavorite': isFavorite,
+        'folderName': folderName,
+        'lyrics': lyrics.map((e) => e.toJson()).toList(),
+      };
+
+  factory SongModel.fromJson(Map<String, dynamic> json) {
+    final rawLyrics = (json['lyrics'] as List<dynamic>?) ?? const [];
+    return SongModel(
+      id: (json['id'] as String?) ?? 'song_unknown',
+      title: (json['title'] as String?) ?? '未知歌曲',
+      artist: (json['artist'] as String?) ?? '未知歌手',
+      album: (json['album'] as String?) ?? '本地专辑',
+      filePath: (json['filePath'] as String?) ?? '',
+      duration: Duration(
+        milliseconds: (json['durationMs'] as num?)?.toInt() ?? 210000,
+      ),
+      sizeBytes: (json['sizeBytes'] as num?)?.toInt() ?? 0,
+      format: (json['format'] as String?) ?? 'FLAC',
+      dominantColor: Color(
+        (json['dominantColor'] as num?)?.toInt() ?? 0xFF00C471,
+      ),
+      accentColor: Color(
+        (json['accentColor'] as num?)?.toInt() ?? 0xFF0F4C3A,
+      ),
+      isFavorite: (json['isFavorite'] as bool?) ?? false,
+      folderName: (json['folderName'] as String?) ?? 'LocalMusic',
+      lyrics: rawLyrics
+          .whereType<Map<String, dynamic>>()
+          .map(LyricLine.fromJson)
+          .toList(),
     );
   }
 

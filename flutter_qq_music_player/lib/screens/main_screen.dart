@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/eq_preset_model.dart';
 import '../models/song_model.dart';
 import '../services/audio_player_service.dart';
+import '../services/car_auto_play_service.dart';
 import '../services/local_scanner_service.dart';
 import '../services/universal_llm_service.dart';
 import '../services/wifi_transfer_server.dart';
@@ -41,9 +42,10 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // 当用户划掉任务或退出播放器进程时，立即停止播放音乐
-    if (state == AppLifecycleState.detached) {
-      ref.read(audioPlayerProvider.notifier).stopPlaybackCompletely();
+    // 切到后台或锁屏时自动保存当前播放歌曲与秒数进度，保持后台进程常驻待命
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      ref.read(audioPlayerProvider.notifier).saveMemoryOnBackground();
     }
   }
   WifiTransferServer? _wifiServer;
@@ -365,14 +367,49 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                 contentPadding: EdgeInsets.zero,
                 activeColor: const Color(0xFF00D676),
                 title: const Text(
-                  '车子启动连接车载蓝牙后自动播放',
+                  '车子启动连接车载蓝牙后自动从上次进度续播',
                   style: TextStyle(color: Colors.white, fontSize: 14),
+                ),
+                subtitle: const Text(
+                  '已支持方向盘/中控物理按键直接切换上一首、下一首、暂停与播放',
+                  style: TextStyle(color: Colors.white54, fontSize: 11),
                 ),
                 value: state.carAutoPlayEnabled,
                 onChanged: (v) {
                   controller.setCarAutoPlay(v);
                   Navigator.pop(ctx);
                 },
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF00D676),
+                    side: const BorderSide(color: Color(0xFF00D676)),
+                    padding: const EdgeInsets.symmetric(vertical: 11),
+                  ),
+                  icon: const Icon(Icons.shield_rounded, size: 18),
+                  label: const Text(
+                    '🛡️ 一键开启华为/安卓后台常驻保活 (防止锁屏被杀)',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                  ),
+                  onPressed: () async {
+                    final ok = await CarAutoPlayService.requestBackgroundKeepAlivePermissions();
+                    if (ctx.mounted) Navigator.pop(ctx);
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            ok
+                                ? '✅ 已加入后台常驻白名单！平时按返回键选「退到后台待命」，上车点火即可自动播放'
+                                : '已发送后台常驻权限请求，请在手机设置中允许本应用后台运行',
+                          ),
+                        ),
+                      );
+                    }
+                  },
+                ),
               ),
               const SizedBox(height: 10),
               SizedBox(
@@ -385,16 +422,16 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                   ),
                   icon: const Icon(Icons.key_rounded),
                   label: const Text(
-                    '🔑 模拟车子点火启动 (立即唤醒并自动播放)',
+                    '🔑 模拟车子点火启动 (从上次记忆位置自动续播)',
                     style: TextStyle(fontWeight: FontWeight.bold),
                   ),
                   onPressed: () async {
                     Navigator.pop(ctx);
-                    await controller.playSongAt(state.currentIndex);
+                    await controller.resumeOrPlayRememberedSong();
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
-                          content: Text('🚗 检测到车载蓝牙已通电连接，已为您自动续播音乐！'),
+                          content: Text('🚗 检测到车载蓝牙已通电连接，已从上次记忆进度自动续播！'),
                         ),
                       );
                     }
@@ -522,35 +559,44 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
       canPop: false,
       onPopInvokedWithResult: (didPop, _) async {
         if (didPop) return;
-        final shouldExit = await showDialog<bool>(
+        final action = await showDialog<String>(
           context: context,
           builder: (ctx) => AlertDialog(
             backgroundColor: const Color(0xFF141E28),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
             title: const Text(
-              '退出悦听播放器',
-              style: TextStyle(color: Colors.white, fontSize: 16),
+              '车载后台待命或退出',
+              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
             ),
             content: const Text(
-              '退出后将立即停止播放音乐并关闭后台进程，确定退出吗？',
-              style: TextStyle(color: Colors.white70, fontSize: 13),
+              '• 选择「退到后台待命」：应用会保留在手机后台进程中并记住当前播放进度，下次启动车子连上蓝牙会自动开始播放！
+
+• 选择「彻底关闭进程」：立即停止音乐并完全结束进程。',
+              style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.45),
             ),
             actions: [
               TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
+                onPressed: () => Navigator.pop(ctx, 'cancel'),
                 child: const Text('取消', style: TextStyle(color: Colors.white54)),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, 'kill'),
+                child: const Text('🚪 彻底关闭进程', style: TextStyle(color: Colors.redAccent)),
               ),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.redAccent,
-                  foregroundColor: Colors.white,
+                  backgroundColor: const Color(0xFF00D676),
+                  foregroundColor: Colors.black,
                 ),
-                onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('立即停止并退出'),
+                onPressed: () => Navigator.pop(ctx, 'background'),
+                child: const Text('🚗 退到后台待命 (推荐)', style: TextStyle(fontWeight: FontWeight.bold)),
               ),
             ],
           ),
         );
-        if (shouldExit == true) {
+        if (action == 'background') {
+          await controller.moveAppToBackground();
+        } else if (action == 'kill') {
           await controller.stopAndExitApp();
         }
       },
@@ -723,9 +769,18 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                             builder: (_) => const SleepTimerAndSpeedSheet(),
                           ),
                         ),
-                        // 8. 退出播放器并停止播放
+                        // 8. 退到后台常驻待命 (上车自动播放)
                         _buildTopPillButton(
-                          label: '🚪 退出并停播',
+                          label: '🛡️ 后台待命 (上车自动播)',
+                          bgColor: const Color(0xFF00D676).withOpacity(0.18),
+                          textColor: const Color(0xFF00E676),
+                          borderColor: const Color(0xFF00D676).withOpacity(0.45),
+                          isBold: true,
+                          onTap: () => controller.moveAppToBackground(),
+                        ),
+                        // 9. 彻底退出播放器并停止播放
+                        _buildTopPillButton(
+                          label: '🚪 彻底退出',
                           bgColor: Colors.redAccent.withOpacity(0.18),
                           textColor: Colors.redAccent,
                           borderColor: Colors.redAccent.withOpacity(0.45),
