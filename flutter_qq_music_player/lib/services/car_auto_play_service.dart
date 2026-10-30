@@ -80,21 +80,7 @@ class CarAutoPlayService {
     rememberLastPosition = prefs.getBool('car_remember_pos') ?? true;
 
     final session = await AudioSession.instance;
-    await session.configure(
-      const AudioSessionConfiguration(
-        avAudioSessionCategory: AVAudioSessionCategory.playback,
-        avAudioSessionCategoryOptions:
-            AVAudioSessionCategoryOptions.allowBluetooth,
-        avAudioSessionMode: AVAudioSessionMode.defaultMode,
-        androidAudioAttributes: AndroidAudioAttributes(
-          contentType: AndroidAudioContentType.music,
-          flags: AndroidAudioFlags.none,
-          usage: AndroidAudioUsage.media,
-        ),
-        androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
-        androidWillPauseWhenDucked: false,
-      ),
-    );
+    await session.configure(const AudioSessionConfiguration.music());
 
     // 1. 启动时立即检查一次：如果当前手机已经连上了车载蓝牙，直接触发自动续播！
     await _checkCurrentAudioDevices(session, isInitialCheck: true);

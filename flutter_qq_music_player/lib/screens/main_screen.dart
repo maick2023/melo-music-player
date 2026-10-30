@@ -569,9 +569,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
               style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
             ),
             content: const Text(
-              '• 选择「退到后台待命」：应用会保留在手机后台进程中并记住当前播放进度，下次启动车子连上蓝牙会自动开始播放！
-
-• 选择「彻底关闭进程」：立即停止音乐并完全结束进程。',
+              '• 选择「退到后台待命」：应用会保留在手机后台进程中并记住当前播放进度，下次启动车子连上蓝牙会自动开始播放！\n\n• 选择「彻底关闭进程」：立即停止音乐并完全结束进程。',
               style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.45),
             ),
             actions: [
