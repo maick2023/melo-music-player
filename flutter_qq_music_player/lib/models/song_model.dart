@@ -86,6 +86,9 @@ class SongModel {
   });
 
   SongModel copyWith({
+    String? title,
+    String? artist,
+    String? album,
     bool? isFavorite,
     List<LyricLine>? lyrics,
     Color? dominantColor,
@@ -93,9 +96,9 @@ class SongModel {
   }) {
     return SongModel(
       id: id,
-      title: title,
-      artist: artist,
-      album: album,
+      title: title ?? this.title,
+      artist: artist ?? this.artist,
+      album: album ?? this.album,
       filePath: filePath,
       duration: duration,
       sizeBytes: sizeBytes,

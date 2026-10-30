@@ -50,6 +50,85 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
   }
   WifiTransferServer? _wifiServer;
   String? _wifiUrl;
+  bool _isEditSortMode = false;
+
+  Future<void> _handleBackgroundStandby(AudioPlayerController controller) async {
+    final movedNatively = await controller.moveAppToBackground();
+    if (!movedNatively && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          backgroundColor: Color(0xFF00A85B),
+          duration: Duration(seconds: 4),
+          content: Text(
+            '✅ 已保存播放进度并激活后台常驻保活！音乐正在继续播放，您现在可直接按手机桌面键(Home)或直接锁屏，上车点火也会自动续播。',
+            style: TextStyle(color: Colors.white, fontSize: 12),
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> _showRenameSongDialog(
+    SongModel item,
+    AudioPlayerController controller,
+  ) async {
+    final titleCtrl = TextEditingController(text: item.title);
+    final artistCtrl = TextEditingController(text: item.artist);
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF141E28),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: const Text(
+          '✏️ 编辑歌曲信息',
+          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: titleCtrl,
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+              decoration: const InputDecoration(
+                labelText: '歌曲名称',
+                labelStyle: TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: artistCtrl,
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+              decoration: const InputDecoration(
+                labelText: '歌手名称',
+                labelStyle: TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消', style: TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF00D676),
+              foregroundColor: Colors.black,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('保存修改', style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+    if (saved == true) {
+      await controller.renameSong(
+        item.id,
+        newTitle: titleCtrl.text,
+        newArtist: artistCtrl.text,
+      );
+    }
+  }
 
   String _formatDuration(Duration d) {
     final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
@@ -593,7 +672,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
           ),
         );
         if (action == 'background') {
-          await controller.moveAppToBackground();
+          await _handleBackgroundStandby(controller);
         } else if (action == 'kill') {
           await controller.stopAndExitApp();
         }
@@ -774,7 +853,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                           textColor: const Color(0xFF00E676),
                           borderColor: const Color(0xFF00D676).withOpacity(0.45),
                           isBold: true,
-                          onTap: () => controller.moveAppToBackground(),
+                          onTap: () => _handleBackgroundStandby(controller),
                         ),
                         // 9. 彻底退出播放器并停止播放
                         _buildTopPillButton(
@@ -1247,38 +1326,146 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                             ],
                           ),
                         ),
-                        OutlinedButton(
-                          style: OutlinedButton.styleFrom(
-                            side: BorderSide(
-                              color: const Color(0xFF00D676).withOpacity(0.45),
-                            ),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
-                          onPressed: () async {
-                            final count = await controller.scanLocalMusic();
-                            if (context.mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text(
-                                    '全盘扫描完成：发现 $count 首手机本地音频（预置曲目可直接点击播放听音）',
-                                  ),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: _isEditSortMode
+                                    ? const Color(0xFF00D676)
+                                    : Colors.white10,
+                                foregroundColor:
+                                    _isEditSortMode ? Colors.black : const Color(0xFF00E676),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 8,
                                 ),
-                              );
-                            }
-                          },
-                          child: const Text(
-                            '全盘扫描',
-                            style: TextStyle(
-                              color: Color(0xFF00E676),
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                              ),
+                              icon: Icon(
+                                _isEditSortMode
+                                    ? Icons.check_circle_rounded
+                                    : Icons.swap_vert_rounded,
+                                size: 15,
+                              ),
+                              label: Text(
+                                _isEditSortMode ? '完成排序' : '编辑排序',
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              onPressed: () {
+                                setState(() => _isEditSortMode = !_isEditSortMode);
+                              },
                             ),
-                          ),
+                            const SizedBox(width: 6),
+                            OutlinedButton(
+                              style: OutlinedButton.styleFrom(
+                                side: BorderSide(
+                                  color: const Color(0xFF00D676).withOpacity(0.45),
+                                ),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 8,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                              ),
+                              onPressed: () async {
+                                final count = await controller.scanLocalMusic();
+                                if (context.mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        '全盘扫描完成：已同步 $count 首手机本地音频',
+                                      ),
+                                    ),
+                                  );
+                                }
+                              },
+                              child: const Text(
+                                '全盘扫描',
+                                style: TextStyle(
+                                  color: Color(0xFF00E676),
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
+                    if (_isEditSortMode) ...[
+                      const SizedBox(height: 10),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0B1118),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: const Color(0xFF00D676).withOpacity(0.35),
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              '⇅ 歌曲排序与编辑模式（可长按拖动歌曲，或点击每首歌右侧的 ⏫置顶 / ⬆️上移 / ⬇️下移 / ✏️改名，排序结果永久保存）：',
+                              style: TextStyle(
+                                color: Color(0xFF00E676),
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Wrap(
+                              spacing: 6,
+                              runSpacing: 6,
+                              children: [
+                                ActionChip(
+                                  backgroundColor: Colors.white10,
+                                  label: const Text(
+                                    '🔤 按歌名排序',
+                                    style: TextStyle(color: Colors.white, fontSize: 11),
+                                  ),
+                                  onPressed: () => controller.sortSongsByMode('title'),
+                                ),
+                                ActionChip(
+                                  backgroundColor: Colors.white10,
+                                  label: const Text(
+                                    '🎤 按歌手排序',
+                                    style: TextStyle(color: Colors.white, fontSize: 11),
+                                  ),
+                                  onPressed: () => controller.sortSongsByMode('artist'),
+                                ),
+                                ActionChip(
+                                  backgroundColor: Colors.white10,
+                                  label: const Text(
+                                    '❤️ 我喜欢置顶',
+                                    style: TextStyle(color: Colors.white, fontSize: 11),
+                                  ),
+                                  onPressed: () => controller.sortSongsByMode('fav_first'),
+                                ),
+                                ActionChip(
+                                  backgroundColor: Colors.white10,
+                                  label: const Text(
+                                    '🔄 倒序排列',
+                                    style: TextStyle(color: Colors.white, fontSize: 11),
+                                  ),
+                                  onPressed: () => controller.sortSongsByMode('reverse'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 12),
                     // 本地曲库搜索框
                     TextField(
@@ -1354,6 +1541,153 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                           ),
                         ),
                       )
+                    else if (_isEditSortMode)
+                      ReorderableListView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: state.allSongs.length,
+                        onReorder: (oldIdx, newIdx) {
+                          controller.reorderSong(oldIdx, newIdx);
+                        },
+                        itemBuilder: (ctx, idx) {
+                          final item = state.allSongs[idx];
+                          final isCurrent = song?.id == item.id;
+                          return Container(
+                            key: ValueKey('reorder_${item.id}'),
+                            margin: const EdgeInsets.only(bottom: 8),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 8,
+                            ),
+                            decoration: BoxDecoration(
+                              color: isCurrent
+                                  ? const Color(0xFF00D676).withOpacity(0.15)
+                                  : const Color(0xFF0B121A),
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(
+                                color: const Color(0xFF00D676).withOpacity(0.35),
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                ReorderableDragStartListener(
+                                  index: idx,
+                                  child: Padding(
+                                    padding: const EdgeInsets.only(right: 8),
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(
+                                          Icons.drag_indicator_rounded,
+                                          color: Color(0xFF00E676),
+                                          size: 20,
+                                        ),
+                                        Text(
+                                          '#${idx + 1}',
+                                          style: const TextStyle(
+                                            color: Colors.white54,
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        item.title,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        item.artist,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: Colors.white54,
+                                          fontSize: 11,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                IconButton(
+                                  tooltip: '置顶到第1首',
+                                  constraints: const BoxConstraints(),
+                                  padding: const EdgeInsets.all(6),
+                                  icon: const Icon(
+                                    Icons.vertical_align_top_rounded,
+                                    color: Color(0xFF00E676),
+                                    size: 19,
+                                  ),
+                                  onPressed: idx == 0
+                                      ? null
+                                      : () => controller.pinSongToTop(item.id),
+                                ),
+                                IconButton(
+                                  tooltip: '上移一位',
+                                  constraints: const BoxConstraints(),
+                                  padding: const EdgeInsets.all(6),
+                                  icon: const Icon(
+                                    Icons.arrow_upward_rounded,
+                                    color: Colors.white70,
+                                    size: 19,
+                                  ),
+                                  onPressed: idx == 0
+                                      ? null
+                                      : () => controller.moveSongByOffset(item.id, -1),
+                                ),
+                                IconButton(
+                                  tooltip: '下移一位',
+                                  constraints: const BoxConstraints(),
+                                  padding: const EdgeInsets.all(6),
+                                  icon: const Icon(
+                                    Icons.arrow_downward_rounded,
+                                    color: Colors.white70,
+                                    size: 19,
+                                  ),
+                                  onPressed: idx == state.allSongs.length - 1
+                                      ? null
+                                      : () => controller.moveSongByOffset(item.id, 1),
+                                ),
+                                IconButton(
+                                  tooltip: '修改歌名与歌手',
+                                  constraints: const BoxConstraints(),
+                                  padding: const EdgeInsets.all(6),
+                                  icon: const Icon(
+                                    Icons.edit_rounded,
+                                    color: Colors.amberAccent,
+                                    size: 18,
+                                  ),
+                                  onPressed: () =>
+                                      _showRenameSongDialog(item, controller),
+                                ),
+                                IconButton(
+                                  tooltip: '删除歌曲',
+                                  constraints: const BoxConstraints(),
+                                  padding: const EdgeInsets.all(6),
+                                  icon: const Icon(
+                                    Icons.delete_outline_rounded,
+                                    color: Colors.redAccent,
+                                    size: 19,
+                                  ),
+                                  onPressed: () => controller.deleteSong(item.id),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      )
                     else
                       ListView.separated(
                         shrinkWrap: true,
@@ -1395,12 +1729,21 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         ],
                                       ),
                                     ),
-                                    child: Icon(
-                                      isCurrent && state.isPlaying
-                                          ? Icons.volume_up_rounded
-                                          : Icons.music_note_rounded,
-                                      color: Colors.white,
-                                      size: 20,
+                                    child: Center(
+                                      child: isCurrent && state.isPlaying
+                                          ? const Icon(
+                                              Icons.volume_up_rounded,
+                                              color: Colors.white,
+                                              size: 20,
+                                            )
+                                          : Text(
+                                              '${idx + 1}',
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 13,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
                                     ),
                                   ),
                                   const SizedBox(width: 12),
@@ -1462,7 +1805,32 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                     ),
                                   ),
                                   IconButton(
+                                    tooltip: '置顶到第1首',
+                                    constraints: const BoxConstraints(),
+                                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                                    icon: const Icon(
+                                      Icons.vertical_align_top_rounded,
+                                      color: Colors.white38,
+                                      size: 19,
+                                    ),
+                                    onPressed: idx == 0
+                                        ? null
+                                        : () async {
+                                            await controller.pinSongToTop(item.id);
+                                            if (context.mounted) {
+                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                SnackBar(
+                                                  content: Text('已将《${item.title}》置顶到第 1 首'),
+                                                  duration: const Duration(seconds: 1),
+                                                ),
+                                              );
+                                            }
+                                          },
+                                  ),
+                                  IconButton(
                                     tooltip: '收藏',
+                                    constraints: const BoxConstraints(),
+                                    padding: const EdgeInsets.symmetric(horizontal: 6),
                                     icon: Icon(
                                       item.isFavorite
                                           ? Icons.favorite_rounded
@@ -1477,6 +1845,8 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   ),
                                   IconButton(
                                     tooltip: '从列表删除此歌曲',
+                                    constraints: const BoxConstraints(),
+                                    padding: const EdgeInsets.symmetric(horizontal: 6),
                                     icon: const Icon(
                                       Icons.delete_outline_rounded,
                                       color: Colors.white38,

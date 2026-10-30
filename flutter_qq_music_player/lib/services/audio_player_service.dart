@@ -95,9 +95,9 @@ class PlayerStateModel {
       }
       if (searchQuery.trim().isNotEmpty) {
         final q = searchQuery.trim().toLowerCase();
-        return s.title.toLowerCase().includesCaseInsensitive(q) ||
-            s.artist.toLowerCase().includesCaseInsensitive(q) ||
-            s.album.toLowerCase().includesCaseInsensitive(q);
+        return s.title.toLowerCase().contains(q) ||
+            s.artist.toLowerCase().contains(q) ||
+            s.album.toLowerCase().contains(q);
       }
       return true;
     }).toList();
@@ -149,11 +149,7 @@ class PlayerStateModel {
   }
 }
 
-extension _StrContainsExt on String {
-  bool includesCaseInsensitive(String other) => contains(other);
-}
-
-/// 全局音频播放、进度记忆、后台常驻与车载按键控制器
+/// 全局音频播放、进度记忆、自定义排序编辑、后台常驻与车载按键控制器
 class AudioPlayerController extends StateNotifier<PlayerStateModel> {
   static const MethodChannel _retainChannel =
       MethodChannel('com.melomusic.player/app_retain');
@@ -167,6 +163,8 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
 
   Set<String> _deletedSongIds = {};
   Set<String> _favoriteSongIds = {};
+  List<String> _savedOrderIds = [];
+  Map<String, Map<String, String>> _savedSongEdits = {};
   String? _rememberedSongId;
   Duration _rememberedPosition = Duration.zero;
   int _lastSavedSecond = -1;
@@ -196,17 +194,32 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
     _initMemoryCarAndStartupScan();
   }
 
-  /// 初始化：1. 恢复上次播放歌曲与毫秒级进度记忆 -> 2. 启动后台常驻 MediaSession 服务 -> 3. 扫描本地音乐并保持记忆位置 -> 4. 启动车载点火监听
+  /// 初始化：1. 恢复上次播放歌曲、进度与自定义排序 -> 2. 启动后台常驻服务 -> 3. 扫描本地音乐并保持记忆位置 -> 4. 启动车载点火监听
   Future<void> _initMemoryCarAndStartupScan() async {
     final prefs = await SharedPreferences.getInstance();
     _deletedSongIds = (prefs.getStringList('deleted_song_ids') ?? []).toSet();
     _favoriteSongIds =
         (prefs.getStringList('favorite_song_ids_v1') ?? []).toSet();
+    _savedOrderIds = prefs.getStringList('saved_song_order_ids_v1') ?? [];
+
+    final rawEdits = prefs.getString('saved_song_edits_v1');
+    if (rawEdits != null && rawEdits.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawEdits) as Map<String, dynamic>;
+        _savedSongEdits = decoded.map((k, v) {
+          final m = (v as Map<String, dynamic>);
+          return MapEntry(k, {
+            'title': (m['title'] as String?) ?? '',
+            'artist': (m['artist'] as String?) ?? '',
+          });
+        });
+      } catch (_) {}
+    }
+
     _rememberedSongId = prefs.getString('last_played_song_id');
     final savedPosMs = prefs.getInt('last_played_position_ms') ?? 0;
     _rememberedPosition = Duration(milliseconds: max(0, savedPosMs));
 
-    // 恢复视觉样式、循环模式、倍速、音效预设
     final styleIdx = prefs.getInt('last_visual_style_idx') ?? 0;
     final loopIdx = prefs.getInt('last_loop_mode_idx') ?? 0;
     final savedSpeed = prefs.getDouble('last_playback_speed') ?? 1.0;
@@ -222,7 +235,6 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
       orElse: () => EqPresetModel.builtinPresets[1],
     );
 
-    // 恢复已保存的在线搜索歌曲与上次正在听的歌曲快照
     final List<SongModel> restoredSongs = [];
     final savedCustomList =
         prefs.getStringList('saved_custom_songs_v1') ?? const [];
@@ -231,9 +243,7 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
         final map = jsonDecode(itemStr) as Map<String, dynamic>;
         final s = SongModel.fromJson(map);
         if (!_deletedSongIds.contains(s.id)) {
-          restoredSongs.add(
-            s.copyWith(isFavorite: _favoriteSongIds.contains(s.id) || s.isFavorite),
-          );
+          restoredSongs.add(_decorateSongWithUserEdits(s));
         }
       } catch (_) {}
     }
@@ -245,32 +255,30 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
         final lastSong = SongModel.fromJson(map);
         if (!_deletedSongIds.contains(lastSong.id) &&
             !restoredSongs.any((s) => s.id == lastSong.id)) {
-          restoredSongs.insert(
-            0,
-            lastSong.copyWith(
-              isFavorite:
-                  _favoriteSongIds.contains(lastSong.id) || lastSong.isFavorite,
-            ),
-          );
+          restoredSongs.insert(0, _decorateSongWithUserEdits(lastSong));
         }
       } catch (_) {}
     }
 
+    final orderedRestored = _applySavedOrder(restoredSongs);
+
     int initialIdx = 0;
-    if (_rememberedSongId != null && restoredSongs.isNotEmpty) {
-      final found = restoredSongs.indexWhere((s) => s.id == _rememberedSongId);
+    if (_rememberedSongId != null && orderedRestored.isNotEmpty) {
+      final found =
+          orderedRestored.indexWhere((s) => s.id == _rememberedSongId);
       if (found != -1) initialIdx = found;
     }
 
     final initialSong =
-        restoredSongs.isNotEmpty ? restoredSongs[initialIdx] : null;
+        orderedRestored.isNotEmpty ? orderedRestored[initialIdx] : null;
 
     state = state.copyWith(
-      allSongs: restoredSongs,
-      currentQueue: restoredSongs,
+      allSongs: orderedRestored,
+      currentQueue: orderedRestored,
       currentIndex: initialIdx,
       position: _rememberedPosition,
-      duration: initialSong?.duration ?? const Duration(minutes: 3, seconds: 30),
+      duration:
+          initialSong?.duration ?? const Duration(minutes: 3, seconds: 30),
       visualStyle: restoredStyle,
       loopMode: restoredLoop,
       playbackSpeed: savedSpeed,
@@ -279,16 +287,10 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
       customEqGains: List<double>.from(restoredPreset.gains),
     );
 
-    // 启动系统级 MediaSession 与通知栏前台保活服务（支持车载方向盘上下曲与锁屏保活）
     await _initBackgroundAudioService();
-
-    // 扫描本地音乐并与已保存歌曲合并（严格保留上次记忆的歌曲下标与进度，绝不重置回第 1 首！）
     await scanLocalMusic(preserveCurrentSelection: true);
-
-    // 预加载上次记忆的歌曲并定位到上次离开时的秒数
     await _preloadRememberedSongAtPosition();
 
-    // 启动车载蓝牙连接检测与点火自动续播服务
     _carService = CarAutoPlayService(
       onCarConnectedTriggerPlay: (_) {
         if (state.carAutoPlayEnabled && state.currentQueue.isNotEmpty) {
@@ -302,8 +304,197 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
       },
     );
     await _carService?.init();
-    // 主动申请后台常驻与蓝牙连接权限，防止锁屏后被系统清理
     CarAutoPlayService.requestBackgroundKeepAlivePermissions();
+  }
+
+  SongModel _decorateSongWithUserEdits(SongModel s) {
+    final edit = _savedSongEdits[s.id];
+    final newTitle =
+        (edit != null && (edit['title'] ?? '').isNotEmpty) ? edit['title']! : s.title;
+    final newArtist =
+        (edit != null && (edit['artist'] ?? '').isNotEmpty) ? edit['artist']! : s.artist;
+    return s.copyWith(
+      title: newTitle,
+      artist: newArtist,
+      isFavorite: _favoriteSongIds.contains(s.id) || s.isFavorite,
+    );
+  }
+
+  List<SongModel> _applySavedOrder(List<SongModel> songs) {
+    if (_savedOrderIds.isEmpty || songs.length <= 1) return songs;
+    final Map<String, int> rankMap = {};
+    for (int i = 0; i < _savedOrderIds.length; i++) {
+      rankMap[_savedOrderIds[i]] = i;
+    }
+    final List<SongModel> ordered = List<SongModel>.from(songs);
+    ordered.sort((a, b) {
+      final ra = rankMap[a.id] ?? 999999;
+      final rb = rankMap[b.id] ?? 999999;
+      return ra.compareTo(rb);
+    });
+    return ordered;
+  }
+
+  Future<void> _saveCurrentOrder(List<SongModel> songs) async {
+    _savedOrderIds = songs.map((s) => s.id).toList();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList('saved_song_order_ids_v1', _savedOrderIds);
+    } catch (_) {}
+  }
+
+  /// 拖拽调整歌曲顺序（长按拖拽松手后立即生效并永久保存排序）
+  Future<void> reorderSong(int oldIndex, int newIndex) async {
+    final list = List<SongModel>.from(state.allSongs);
+    if (oldIndex < 0 || oldIndex >= list.length) return;
+    if (newIndex > oldIndex) newIndex -= 1;
+    newIndex = newIndex.clamp(0, list.length - 1);
+
+    final playingId = state.currentSong?.id;
+    final movedItem = list.removeAt(oldIndex);
+    list.insert(newIndex, movedItem);
+
+    int nextCurrentIndex = state.currentIndex;
+    if (playingId != null) {
+      final found = list.indexWhere((s) => s.id == playingId);
+      if (found != -1) nextCurrentIndex = found;
+    }
+
+    state = state.copyWith(
+      allSongs: list,
+      currentQueue: list,
+      currentIndex: nextCurrentIndex,
+    );
+    await _saveCurrentOrder(list);
+    await _saveCustomSongsList(list);
+  }
+
+  /// 点击上移 (offset = -1) 或下移 (offset = 1) 调整单曲位置
+  Future<void> moveSongByOffset(String songId, int offset) async {
+    final list = List<SongModel>.from(state.allSongs);
+    final idx = list.indexWhere((s) => s.id == songId);
+    if (idx == -1) return;
+    final targetIdx = (idx + offset).clamp(0, list.length - 1);
+    if (targetIdx == idx) return;
+
+    final playingId = state.currentSong?.id;
+    final item = list.removeAt(idx);
+    list.insert(targetIdx, item);
+
+    int nextCurrentIndex = state.currentIndex;
+    if (playingId != null) {
+      final found = list.indexWhere((s) => s.id == playingId);
+      if (found != -1) nextCurrentIndex = found;
+    }
+
+    state = state.copyWith(
+      allSongs: list,
+      currentQueue: list,
+      currentIndex: nextCurrentIndex,
+    );
+    await _saveCurrentOrder(list);
+    await _saveCustomSongsList(list);
+  }
+
+  /// 一键将指定歌曲置顶到第 1 位
+  Future<void> pinSongToTop(String songId) async {
+    final list = List<SongModel>.from(state.allSongs);
+    final idx = list.indexWhere((s) => s.id == songId);
+    if (idx <= 0) return;
+
+    final playingId = state.currentSong?.id;
+    final item = list.removeAt(idx);
+    list.insert(0, item);
+
+    int nextCurrentIndex = state.currentIndex;
+    if (playingId != null) {
+      final found = list.indexWhere((s) => s.id == playingId);
+      if (found != -1) nextCurrentIndex = found;
+    }
+
+    state = state.copyWith(
+      allSongs: list,
+      currentQueue: list,
+      currentIndex: nextCurrentIndex,
+    );
+    await _saveCurrentOrder(list);
+    await _saveCustomSongsList(list);
+  }
+
+  /// 快捷批量排序：'title' (按歌名) | 'artist' (按歌手) | 'fav_first' (我喜欢置顶) | 'reverse' (倒序)
+  Future<void> sortSongsByMode(String mode) async {
+    if (state.allSongs.length <= 1) return;
+    final playingId = state.currentSong?.id;
+    List<SongModel> list = List<SongModel>.from(state.allSongs);
+
+    if (mode == 'title') {
+      list.sort((a, b) => a.title.compareTo(b.title));
+    } else if (mode == 'artist') {
+      list.sort((a, b) {
+        final cmp = a.artist.compareTo(b.artist);
+        return cmp != 0 ? cmp : a.title.compareTo(b.title);
+      });
+    } else if (mode == 'fav_first') {
+      list.sort((a, b) {
+        if (a.isFavorite == b.isFavorite) return 0;
+        return a.isFavorite ? -1 : 1;
+      });
+    } else if (mode == 'reverse') {
+      list = list.reversed.toList();
+    }
+
+    int nextCurrentIndex = state.currentIndex;
+    if (playingId != null) {
+      final found = list.indexWhere((s) => s.id == playingId);
+      if (found != -1) nextCurrentIndex = found;
+    }
+
+    state = state.copyWith(
+      allSongs: list,
+      currentQueue: list,
+      currentIndex: nextCurrentIndex,
+    );
+    await _saveCurrentOrder(list);
+    await _saveCustomSongsList(list);
+  }
+
+  /// 编辑修改歌曲名称与歌手名（永久保存修改）
+  Future<void> renameSong(
+    String songId, {
+    required String newTitle,
+    required String newArtist,
+  }) async {
+    final t = newTitle.trim();
+    final a = newArtist.trim();
+    if (t.isEmpty) return;
+
+    _savedSongEdits[songId] = {
+      'title': t,
+      'artist': a.isEmpty ? '未知歌手' : a,
+    };
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('saved_song_edits_v1', jsonEncode(_savedSongEdits));
+    } catch (_) {}
+
+    final updatedAll = state.allSongs.map((s) {
+      if (s.id == songId) {
+        return s.copyWith(title: t, artist: a.isEmpty ? s.artist : a);
+      }
+      return s;
+    }).toList();
+
+    final updatedQueue = state.currentQueue.map((s) {
+      if (s.id == songId) {
+        return s.copyWith(title: t, artist: a.isEmpty ? s.artist : a);
+      }
+      return s;
+    }).toList();
+
+    state = state.copyWith(allSongs: updatedAll, currentQueue: updatedQueue);
+    await _saveCustomSongsList(updatedAll);
+    await _savePlaybackMemory();
+    _syncMediaNotification();
   }
 
   /// 初始化系统通知栏与车载蓝牙 MediaSession
@@ -326,9 +517,7 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
         ),
       );
       _syncMediaNotification();
-    } catch (_) {
-      // 如果宿主未启用 AudioServiceActivity 则安全降级，不影响播放器正常使用
-    }
+    } catch (_) {}
   }
 
   void _syncMediaNotification() {
@@ -396,7 +585,6 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
   void _bindAudioStreams() {
     _audioPlayer.positionStream.listen((pos) {
       state = state.copyWith(position: pos);
-      // 每隔 2 秒自动持久化保存一次当前播放进度，确保随时退出或断电都不丢失进度
       final sec = pos.inSeconds;
       if (state.isPlaying && sec > 0 && (sec - _lastSavedSecond).abs() >= 2) {
         _lastSavedSecond = sec;
@@ -424,7 +612,6 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
     });
   }
 
-  /// 保存当前播放的歌曲 ID、歌曲完整 JSON 快照与毫秒进度到手机本地存储
   Future<void> _savePlaybackMemory({
     SongModel? songOverride,
     Duration? positionOverride,
@@ -443,7 +630,6 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
     } catch (_) {}
   }
 
-  /// 保存用户搜索添加的在线歌曲与导入歌曲列表，防止下次打开丢失
   Future<void> _saveCustomSongsList(List<SongModel> allSongs) async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -456,7 +642,6 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
     } catch (_) {}
   }
 
-  /// App 启动时预加载上次播放的歌曲并跳转到上次记忆的进度（不重置回第 1 首）
   Future<void> _preloadRememberedSongAtPosition() async {
     if (_hasPreloadedInitialSong || state.currentQueue.isEmpty) return;
     final idx = state.currentIndex.clamp(0, state.currentQueue.length - 1);
@@ -484,7 +669,6 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
     } catch (_) {}
   }
 
-  /// 车载点火或按播放键时：从上次记忆的歌曲和进度直接无缝续播
   Future<void> resumeOrPlayRememberedSong() async {
     if (state.currentQueue.isEmpty) return;
     if (state.isPlaying && _audioPlayer.playing) return;
@@ -494,7 +678,8 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
         _audioPlayer.processingState == ProcessingState.completed) {
       await playSongAt(
         idx,
-        startPosition: state.position.inSeconds > 0 ? state.position : _rememberedPosition,
+        startPosition:
+            state.position.inSeconds > 0 ? state.position : _rememberedPosition,
       );
     } else {
       state = state.copyWith(isPlaying: true);
@@ -507,31 +692,28 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
     }
   }
 
-  /// 扫描手机本地音乐库（自动过滤已删除歌曲，并严格保持上次记忆的歌曲位置，绝不重置回第 1 首）
+  /// 扫描手机本地音乐库（自动过滤已删除歌曲，应用用户自定义排序与改名，并严格保持上次记忆的歌曲位置）
   Future<int> scanLocalMusic({bool preserveCurrentSelection = true}) async {
     final currentSelectedId = state.currentSong?.id ?? _rememberedSongId;
-    final currentPos = state.position.inSeconds > 0 ? state.position : _rememberedPosition;
+    final currentPos =
+        state.position.inSeconds > 0 ? state.position : _rememberedPosition;
 
     final scanned = await _scannerService.autoScanAllDeviceMusic();
     final filteredScanned = scanned
         .where((s) => !_deletedSongIds.contains(s.id))
-        .map(
-          (s) => s.copyWith(
-            isFavorite: _favoriteSongIds.contains(s.id) || s.isFavorite,
-          ),
-        )
+        .map(_decorateSongWithUserEdits)
         .toList();
 
     if (filteredScanned.isNotEmpty || state.allSongs.isNotEmpty) {
       final existingCustom = state.allSongs
           .where((s) => !_deletedSongIds.contains(s.id))
+          .map(_decorateSongWithUserEdits)
           .toList();
       final existingIds = existingCustom.map((e) => e.id).toSet();
       final newFromScan =
           filteredScanned.where((s) => !existingIds.contains(s.id)).toList();
 
-      // 将用户已有的在线/记忆歌曲与本地扫描歌曲合并
-      final merged = [...existingCustom, ...newFromScan];
+      final merged = _applySavedOrder([...existingCustom, ...newFromScan]);
 
       int targetIndex = 0;
       if (preserveCurrentSelection && currentSelectedId != null) {
@@ -568,6 +750,7 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
         currentQueue: merged,
         currentIndex: 0,
       );
+      await _saveCurrentOrder(merged);
       await _saveCustomSongsList(merged);
       await playSongAt(0);
     }
@@ -601,6 +784,7 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
       isPlaying: wasCurrent ? false : state.isPlaying,
       position: wasCurrent ? Duration.zero : state.position,
     );
+    await _saveCurrentOrder(updatedAll);
     await _saveCustomSongsList(updatedAll);
     await _savePlaybackMemory(
       positionOverride: wasCurrent ? Duration.zero : state.position,
@@ -634,6 +818,7 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
       currentQueue: updated,
       currentIndex: 0,
     );
+    await _saveCurrentOrder(updated);
     await _saveCustomSongsList(updated);
     await playSongAt(0);
   }
@@ -645,7 +830,7 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
     }
   }
 
-  /// 播放指定下标歌曲（支持传入初始续播位置 startPosition，并立即写入记忆）
+  /// 播放指定下标歌曲
   Future<void> playSongAt(int index, {Duration? startPosition}) async {
     if (index < 0 || index >= state.currentQueue.length) return;
     final song = state.currentQueue[index];
@@ -734,23 +919,30 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
     } catch (_) {}
   }
 
-  /// 保存当前所有状态记忆（供 App 切到后台时调用）
+  /// 保存当前所有状态记忆
   Future<void> saveMemoryOnBackground() async {
     await _savePlaybackMemory();
     await _saveCustomSongsList(state.allSongs);
+    await _saveCurrentOrder(state.allSongs);
   }
 
-  /// 将应用退到手机后台待命（不结束进程，保持蓝牙点火监听与方向盘按键响应）
-  Future<void> moveAppToBackground() async {
+  /// 将应用退到手机后台待命：
+  /// 重要修复：绝不调用 SystemNavigator.pop()！因为 SystemNavigator.pop() 在安卓上会调用 Activity.finish() 销毁引擎导致音乐立即停止！
+  /// 若原生 moveTaskToBack 通道可用则退回桌面且不断播；若未更新原生层则保持音乐继续播放并激活后台常驻白名单。
+  Future<bool> moveAppToBackground() async {
     await saveMemoryOnBackground();
     _syncMediaNotification();
+    await CarAutoPlayService.requestBackgroundKeepAlivePermissions();
     if (Platform.isAndroid) {
       try {
-        await _retainChannel.invokeMethod('moveTaskToBack');
-        return;
-      } catch (_) {}
-      await SystemNavigator.pop();
+        final moved =
+            await _retainChannel.invokeMethod<bool>('moveTaskToBack');
+        if (moved == true) return true;
+      } catch (_) {
+        // 未注册原生 moveTaskToBack 时忽略异常，保持当前播放不中断
+      }
     }
+    return false;
   }
 
   /// 彻底停止播放并释放音频焦点
@@ -764,7 +956,7 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
     } catch (_) {}
   }
 
-  /// 停止音乐并彻底结束 App 进程（仅当用户明确点击“彻底关闭进程”时调用）
+  /// 停止音乐并彻底结束 App 进程（仅当用户明确点击“彻底退出”时调用）
   Future<void> stopAndExitApp() async {
     await stopPlaybackCompletely();
     try {
@@ -851,7 +1043,10 @@ class AudioPlayerController extends StateNotifier<PlayerStateModel> {
       _favoriteSongIds.add(songId);
     }
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList('favorite_song_ids_v1', _favoriteSongIds.toList());
+    await prefs.setStringList(
+      'favorite_song_ids_v1',
+      _favoriteSongIds.toList(),
+    );
 
     final updatedAll = state.allSongs.map((s) {
       return s.id == songId

@@ -200,31 +200,53 @@ class UniversalLlmService {
     await prefs.setBool('llm_voice_tts', this.enableVoiceTts);
   }
 
-  /// 向兼容 OpenAI /chat/completions 规范的大模型接口发送请求
-  /// 针对火山引擎，自动兼容标准方舟端点 (/api/v3) 与订阅套餐端点 (/api/plan/v3)，
-  /// 并自动轮询你在「开通管理」中已开通的全部 7 个模型 ID
+  /// 向兼容 OpenAI /chat/completions 规范的大模型接口发送多轮对话请求
+  /// 支持回答任何领域的知识、日常聊天、写文章、写代码、翻译、逻辑推理，同时兼备语音点歌控制能力
   Future<String> chatWithModel({
     required String userMessage,
     required String currentSongSummary,
     required List<String> localSongTitles,
+    List<Map<String, String>> historyMessages = const [],
   }) async {
-    if (apiKey.isEmpty) {
+    if (apiKey.trim().isEmpty) {
+      await loadSavedConfig();
+    }
+    if (apiKey.trim().isEmpty) {
       return _offlineSmartFallback(userMessage, currentSongSummary);
     }
 
     final systemPrompt = '''
-你是“悦听 (MeloMusic)”跨平台音乐播放器的内置 AI 音乐伴侣与语音助手。
-当前正在播放：$currentSongSummary。
-用户本地曲库部分歌曲：${localSongTitles.take(12).join('、')}。
+你是一个全能型人工智能助手（同时也是“悦听 MeloMusic”播放器的智能管家）。
+你可以和用户自由畅聊任何话题、回答任何领域的问题（包括但不限于：日常交流、百科常识、新闻分析、工作写作、翻译、数学逻辑推理、编程代码、生活建议、情感陪伴、音乐鉴赏等），请给出详尽、自然、有深度的回答，不限制回答字数。
 
-重要规则：
-1. 如果用户表达了“我想听xxx”、“播放xxx”、“搜一下xxx”等点歌意图，请在回复的第一行输出指令标签：[PLAY_SONG:歌名或歌手]，然后再用温暖简短的中文回应用户。
-2. 如果用户说“下一首/切歌”，第一行输出：[ACTION:NEXT]
-3. 如果用户说“上一首”，第一行输出：[ACTION:PREV]
-4. 如果用户说“暂停/停止播放”，第一行输出：[ACTION:PAUSE]
-5. 如果用户说“切换到黑胶/大图/流光卡片”，第一行输出：[STYLE:VINYL] 或 [STYLE:FULLSCREEN] 或 [STYLE:GLASS]
-6. 其余音乐闲聊、歌词赏析或歌手故事，请直接用亲切精炼的中文回答（控制在 100 字以内，适合语音朗读）。
+【可选的播放器控制指令（仅当用户明确要求操控音乐时才使用）】：
+当前播放器状态：$currentSongSummary。用户曲库部分歌曲：${localSongTitles.take(15).join('、')}。
+- 只有当用户明确说出“我想听xxx歌”、“播放歌曲xxx”、“来一首xxx”等点歌指令时，才在回复的第一行单独输出：[PLAY_SONG:歌名或歌手]，第二行开始正常回复用户。
+- 只有当用户明确说“下一首/切歌”时，第一行输出：[ACTION:NEXT]
+- 只有当用户明确说“上一首”时，第一行输出：[ACTION:PREV]
+- 只有当用户明确说“暂停播放/停止放歌”时，第一行输出：[ACTION:PAUSE]
+- 只有当用户明确说“切换到黑胶模式/大图模式/流光卡片模式”时，第一行输出：[STYLE:VINYL] 或 [STYLE:FULLSCREEN] 或 [STYLE:GLASS]
+- 如果用户是在和你聊天、提问、探讨问题（而不是点歌或控制播放器），请【绝对不要】输出任何方括号指令标签，直接像满血大模型一样自由、完整地回答用户的问题！
 ''';
+
+    // 组装多轮对话上下文（保留最近 10 轮对话，支持连续追问与深入交流）
+    final List<Map<String, String>> apiMessages = [
+      {'role': 'system', 'content': systemPrompt},
+    ];
+    final recentHistory = historyMessages.length > 10
+        ? historyMessages.sublist(historyMessages.length - 10)
+        : historyMessages;
+    for (final m in recentHistory) {
+      final role = m['role'] == 'user' ? 'user' : 'assistant';
+      final text = (m['text'] ?? '').trim();
+      if (text.isNotEmpty) {
+        apiMessages.add({'role': role, 'content': text});
+      }
+    }
+    if (apiMessages.last['role'] != 'user' ||
+        apiMessages.last['content'] != userMessage.trim()) {
+      apiMessages.add({'role': 'user', 'content': userMessage.trim()});
+    }
 
     final bool isVolc = baseUrl.contains('volces.com') || providerId == 'volcengine';
     final String primaryModel = isVolc ? normalizeVolcengineModelId(modelName) : modelName;
@@ -274,23 +296,23 @@ class UniversalLlmService {
                 },
                 body: jsonEncode({
                   'model': candidateModel,
-                  'messages': [
-                    {'role': 'system', 'content': systemPrompt},
-                    {'role': 'user', 'content': userMessage},
-                  ],
+                  'messages': apiMessages,
                   'temperature': 0.7,
-                  'max_tokens': 400,
+                  'max_tokens': 4096,
                 }),
               )
-              .timeout(const Duration(seconds: 20));
+              .timeout(const Duration(seconds: 60));
 
           if (response.statusCode == 200) {
             final decoded = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
             final choices = decoded['choices'] as List<dynamic>?;
             if (choices != null && choices.isNotEmpty) {
               final msg = choices.first['message'] as Map<String, dynamic>?;
-              final content = msg?['content']?.toString().trim();
-              if (content != null && content.isNotEmpty) {
+              String content = msg?['content']?.toString().trim() ?? '';
+              if (content.isEmpty) {
+                content = msg?['reasoning_content']?.toString().trim() ?? '';
+              }
+              if (content.isNotEmpty) {
                 final prefs = await SharedPreferences.getInstance();
                 if (candidateModel != modelName) {
                   modelName = candidateModel;
@@ -336,32 +358,23 @@ class UniversalLlmService {
 
   String _offlineSmartFallback(String userMessage, String currentSongSummary) {
     final text = userMessage.trim();
-    if (text.contains('下一首') || text.contains('切歌') || text.contains('换一首')) {
+    if (text == '下一首' || text == '切歌' || text == '换一首') {
       return '[ACTION:NEXT]\n好的，马上为您切换到下一首歌曲！';
     }
-    if (text.contains('上一首')) {
+    if (text == '上一首') {
       return '[ACTION:PREV]\n好的，已为您切回上一首歌曲。';
     }
-    if (text.contains('暂停') || text.contains('停止') || text.contains('别唱了')) {
+    if (text == '暂停' || text == '停止播放' || text == '别唱了') {
       return '[ACTION:PAUSE]\n好的，音乐已暂停。';
     }
-    if (text.contains('流光') || text.contains('卡片')) {
-      return '[STYLE:GLASS]\n已为您切换至流光毛玻璃卡片播放页！';
-    }
-    if (text.contains('大图') || text.contains('海报')) {
-      return '[STYLE:FULLSCREEN]\n已为您切换至沉浸式海报大图模式！';
-    }
-    if (text.contains('黑胶') || text.contains('唱针')) {
-      return '[STYLE:VINYL]\n已为您切换至经典黑胶唱针模式！';
-    }
-    if (text.contains('我想听') || text.contains('播放') || text.contains('来一首') || text.contains('搜')) {
+    if (text.startsWith('我想听') || text.startsWith('播放') || text.startsWith('来一首')) {
       final keyword = text
-          .replaceAll(RegExp(r'(我想听|帮我播放|播放|来一首|搜索|搜一下|的歌)'), '')
+          .replaceAll(RegExp(r'^(我想听|帮我播放|播放|来一首)'), '')
           .trim();
       if (keyword.isNotEmpty) {
         return '[PLAY_SONG:$keyword]\n没问题，正在为您全网搜索并播放《$keyword》！';
       }
     }
-    return '当前正在播放：$currentSongSummary。\n（提示：您尚未填入大模型 API Key，目前运行在本地离线语音管家模式。点击右上角“配置 API”填入您的火山引擎/DeepSeek/千问 Key 即可开启满血 AI 对话！）';
+    return '⚠️ 您尚未保存大模型 API Key（或 Key 为空），当前处于离线状态，无法联网回答您的提问：「$text」。\n\n👉 请点击右上角「配置大模型 API」，点击「📋 一键粘贴 Key」填入您的火山引擎 / DeepSeek / 通义千问 API Key，即可与大模型自由聊天、探讨任何问题！';
   }
 }
